@@ -36,18 +36,22 @@ export async function apiFetch(path: string, options: FetchOptions = {}) {
     headers.set('Content-Type', 'application/json');
   }
 
-  // Ensure trailing slash on REST collection/resource paths to avoid FastAPI 307 redirects
-  // which strip the Authorization header and body. But don't add slash to action segments
-  // like /pdf, /download, /ledger that are intentional non-collection endpoints.
-  const ACTION_SEGMENTS = ['pdf', 'download', 'ledger', 'export', 'print', 'preview'];
-  const lastSegment = path.split('?')[0].split('/').filter(Boolean).pop() || '';
-  const needsSlash = !path.endsWith('/') && !ACTION_SEGMENTS.includes(lastSegment);
+  // A path needs a trailing slash ONLY if it is exactly one of the REST collection roots
+  // (e.g., /customers, /products, /invoices, /payments, /settings).
+  // Any other paths (sub-routes, detail routes with IDs, action segments, auth, reports)
+  // must NOT have a trailing slash to avoid 307 redirects that strip headers in production.
+  const pathWithoutQuery = path.split('?')[0];
+  const queryStr = path.includes('?') ? '?' + path.split('?')[1] : '';
+
+  const collections = ['/customers', '/products', '/invoices', '/payments', '/settings'];
+  const needsSlash = collections.includes(pathWithoutQuery);
 
   const normalizedPath = needsSlash
-    ? path.includes('?')
-      ? path.replace(/([^?/])(\?.*)$/, '$1/$2')
-      : `${path}/`
-    : path;
+    ? `${pathWithoutQuery}/${queryStr}`
+    : pathWithoutQuery.endsWith('/') && pathWithoutQuery !== '/'
+      ? pathWithoutQuery.slice(0, -1) + queryStr
+      : path;
+
   const url = path.startsWith('http') ? path : `${API_BASE_URL}${normalizedPath}`;
   
   const response = await fetch(url, {
