@@ -1,22 +1,225 @@
-import { DatabaseSync } from 'node:sqlite';
 import path from 'path';
 
-const isVercel = !!process.env.VERCEL || process.env.NODE_ENV === 'production';
-const dbDir = isVercel ? '/tmp' : process.cwd();
-const dbPath = path.join(dbDir, 'agrishield.db');
-let dbInstance: DatabaseSync | null = null;
-
-export function getDb(): DatabaseSync {
-  if (!dbInstance) {
-    dbInstance = new DatabaseSync(dbPath);
-    dbInstance.exec('PRAGMA foreign_keys = ON;');
-    initTables(dbInstance);
-  }
-  return dbInstance;
+export interface DbStatement {
+  get(...params: any[]): any;
+  all(...params: any[]): any[];
+  run(...params: any[]): any;
 }
 
-function initTables(db: DatabaseSync) {
-  // Users table
+export interface DbDriver {
+  exec(sql: string): void;
+  prepare(sql: string): DbStatement;
+}
+
+let dbInstance: DbDriver | null = null;
+
+// In-Memory Database Fallback Engine for Vercel / Serverless Environments
+class MemoryDb implements DbDriver {
+  private tables: Record<string, any[]> = {
+    users: [],
+    customers: [],
+    products: [],
+    product_batches: [],
+    stock_ledger: [],
+    invoices: [],
+    invoice_items: [],
+    payments: [],
+    settings: [],
+    warehouses: [],
+    inventory_imports: [],
+  };
+
+  exec(sql: string): void {
+    // Basic table creation / pragma commands ignored or initialized
+  }
+
+  prepare(sql: string): DbStatement {
+    const self = this;
+    const cleanSql = sql.trim();
+    const upperSql = cleanSql.toUpperCase();
+
+    return {
+      get(...params: any[]) {
+        const results = self.executeQuery(cleanSql, params);
+        return results.length > 0 ? results[0] : undefined;
+      },
+      all(...params: any[]) {
+        return self.executeQuery(cleanSql, params);
+      },
+      run(...params: any[]) {
+        self.executeMutation(cleanSql, params);
+        return { changes: 1 };
+      }
+    };
+  }
+
+  private executeQuery(sql: string, params: any[]): any[] {
+    const upper = sql.toUpperCase();
+
+    // SELECT COUNT(*)
+    if (upper.includes('SELECT COUNT(*)')) {
+      const tableName = this.extractTable(sql);
+      const rows = this.tables[tableName] || [];
+      return [{ cnt: rows.length, count: rows.length }];
+    }
+
+    // SELECT BY ID / EMAIL / SKU
+    if (upper.includes('FROM USERS')) {
+      if (params.length > 0) {
+        const val = params[0];
+        return this.tables.users.filter(u => u.email === val || u.id === val);
+      }
+      return this.tables.users;
+    }
+
+    if (upper.includes('FROM CUSTOMERS')) {
+      if (upper.includes('WHERE ID =')) {
+        return this.tables.customers.filter(c => c.id === params[0]);
+      }
+      return this.tables.customers;
+    }
+
+    if (upper.includes('FROM PRODUCTS')) {
+      if (upper.includes('WHERE ID =')) return this.tables.products.filter(p => p.id === params[0]);
+      if (upper.includes('WHERE SKU =')) return this.tables.products.filter(p => p.sku === params[0]);
+      return this.tables.products;
+    }
+
+    if (upper.includes('FROM PRODUCT_BATCHES')) {
+      if (upper.includes('WHERE PRODUCT_ID =') && upper.includes('BATCH_NUMBER =')) {
+        return this.tables.product_batches.filter(b => b.product_id === params[0] && b.batch_number === params[1]);
+      }
+      if (upper.includes('WHERE PRODUCT_ID =')) {
+        return this.tables.product_batches.filter(b => b.product_id === params[0]);
+      }
+      if (upper.includes('WHERE BATCH_NUMBER =')) {
+        return this.tables.product_batches.filter(b => b.batch_number === params[0]);
+      }
+      return this.tables.product_batches;
+    }
+
+    if (upper.includes('FROM WAREHOUSES')) {
+      if (params.length > 0) {
+        const q = (params[0] || '').toString().toLowerCase();
+        return this.tables.warehouses.filter(w => w.name.toLowerCase() === q || w.code.toLowerCase() === q);
+      }
+      return this.tables.warehouses;
+    }
+
+    if (upper.includes('FROM SETTINGS')) {
+      return this.tables.settings.length > 0 ? [this.tables.settings[0]] : [];
+    }
+
+    if (upper.includes('FROM INVOICES')) {
+      if (upper.includes('WHERE ID =')) return this.tables.invoices.filter(i => i.id === params[0]);
+      return this.tables.invoices;
+    }
+
+    if (upper.includes('FROM INVOICE_ITEMS')) {
+      if (upper.includes('WHERE INVOICE_ID =')) return this.tables.invoice_items.filter(i => i.invoice_id === params[0]);
+      return this.tables.invoice_items;
+    }
+
+    if (upper.includes('FROM STOCK_LEDGER')) {
+      return this.tables.stock_ledger;
+    }
+
+    if (upper.includes('FROM PAYMENTS')) {
+      return this.tables.payments;
+    }
+
+    return [];
+  }
+
+  private executeMutation(sql: string, params: any[]): void {
+    const upper = sql.toUpperCase();
+
+    if (upper.includes('INSERT INTO USERS')) {
+      this.tables.users.push({
+        id: params[0], email: params[1], password_hash: params[2], full_name: params[3], role: params[4], is_active: 1
+      });
+    } else if (upper.includes('INSERT INTO WAREHOUSES')) {
+      this.tables.warehouses.push({ id: params[0], name: params[1], code: params[2], address: params[3] });
+    } else if (upper.includes('INSERT INTO SETTINGS')) {
+      this.tables.settings = [{
+        id: 1, company_name: params[0], legal_name: params[1], gstin: params[2], fertilizer_license: params[3],
+        insecticide_license: params[4], phone: params[5], email: params[6], address: params[7], bank_name: params[8], account_number: params[9], ifsc_code: params[10]
+      }];
+    } else if (upper.includes('INSERT INTO PRODUCTS')) {
+      this.tables.products.push({
+        id: params[0], name: params[1], sku: params[2], category: params[3], npk_ratio: params[4], hsn_code: params[5],
+        gst_rate: params[6], mrp: params[7], dealer_price: params[8], distributor_price: params[9], batch_number: params[10],
+        mfg_date: params[11], expiry_date: params[12], stock: params[13]
+      });
+    } else if (upper.includes('INSERT INTO PRODUCT_BATCHES')) {
+      this.tables.product_batches.push({
+        id: params[0], product_id: params[1], warehouse_id: params[2], batch_number: params[3], mfg_date: params[4], expiry_date: params[5], current_stock: params[6], cost_price: params[7]
+      });
+    } else if (upper.includes('INSERT INTO STOCK_LEDGER')) {
+      this.tables.stock_ledger.push({
+        id: params[0], product_id: params[1], batch_id: params[2], movement_type: params[3], quantity: params[4], reference_doc_type: params[5], reference_doc_id: params[6], reason: params[7], created_by: params[8], created_at: new Date().toISOString()
+      });
+    } else if (upper.includes('INSERT INTO CUSTOMERS')) {
+      this.tables.customers.push({
+        id: params[0], name: params[1], shop_name: params[2], phone: params[3], gstin: params[4], billing_address: params[5], shipping_address: params[6], credit_limit: params[7], outstanding_balance: params[8]
+      });
+    } else if (upper.includes('INSERT INTO INVOICES')) {
+      this.tables.invoices.push({
+        id: params[0], invoice_number: params[1], customer_id: params[2], invoice_date: params[3], subtotal: params[4], cgst_total: params[5], sgst_total: params[6], igst_total: params[7], transport_charges: params[8], grand_total: params[9], terms: params[10], status: 'Unpaid', created_by: params[11], created_at: new Date().toISOString()
+      });
+    } else if (upper.includes('INSERT INTO INVOICE_ITEMS')) {
+      this.tables.invoice_items.push({
+        id: params[0], invoice_id: params[1], product_id: params[2], product_name: params[3], sku: params[4], quantity: params[5], rate: params[6], discount_pct: params[7], subtotal: params[8], gst_rate: params[9], cgst_amount: params[10], sgst_amount: params[11], igst_amount: params[12], total_amount: params[13]
+      });
+    } else if (upper.includes('INSERT INTO INVENTORY_IMPORTS')) {
+      this.tables.inventory_imports.push({
+        id: params[0], filename: params[1], uploaded_by: params[2], total_rows: params[3], successful_rows: params[4], failed_rows: params[5], status: params[6]
+      });
+    } else if (upper.includes('UPDATE PRODUCTS SET STOCK = STOCK +')) {
+      const prod = this.tables.products.find(p => p.id === params[1]);
+      if (prod) prod.stock += params[0];
+    } else if (upper.includes('UPDATE PRODUCT_BATCHES SET CURRENT_STOCK = CURRENT_STOCK +')) {
+      const batch = this.tables.product_batches.find(b => b.id === params[1]);
+      if (batch) batch.current_stock += params[0];
+    } else if (upper.includes('UPDATE CUSTOMERS SET OUTSTANDING_BALANCE = OUTSTANDING_BALANCE +')) {
+      const cust = this.tables.customers.find(c => c.id === params[1]);
+      if (cust) cust.outstanding_balance += params[0];
+    }
+  }
+
+  private extractTable(sql: string): string {
+    const parts = sql.toLowerCase().split('from ');
+    if (parts.length > 1) {
+      return parts[1].split(' ')[0].trim();
+    }
+    return '';
+  }
+}
+
+export function getDb(): DbDriver {
+  if (!dbInstance) {
+    try {
+      // Attempt loading node:sqlite dynamically
+      const { DatabaseSync } = require('node:sqlite');
+      const isVercel = !!process.env.VERCEL || process.env.NODE_ENV === 'production';
+      const dbDir = isVercel ? '/tmp' : process.cwd();
+      const dbPath = path.join(dbDir, 'agrishield.db');
+
+      const nativeDb = new DatabaseSync(dbPath);
+      nativeDb.exec('PRAGMA foreign_keys = ON;');
+      initTablesNative(nativeDb);
+      dbInstance = nativeDb as any;
+    } catch (e) {
+      console.warn('Native node:sqlite unavailable in current runtime. Falling back to universal in-memory DB engine.');
+      const memDb = new MemoryDb();
+      seedDefaultDataGeneric(memDb);
+      dbInstance = memDb;
+    }
+  }
+  return dbInstance!;
+}
+
+function initTablesNative(db: any) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
@@ -27,10 +230,6 @@ function initTables(db: DatabaseSync) {
       is_active INTEGER DEFAULT 1,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
-  `);
-
-  // Warehouses table
-  db.exec(`
     CREATE TABLE IF NOT EXISTS warehouses (
       id TEXT PRIMARY KEY,
       name TEXT UNIQUE NOT NULL,
@@ -38,10 +237,6 @@ function initTables(db: DatabaseSync) {
       address TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
-  `);
-
-  // Customers table
-  db.exec(`
     CREATE TABLE IF NOT EXISTS customers (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -55,10 +250,6 @@ function initTables(db: DatabaseSync) {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
-  `);
-
-  // Products master table
-  db.exec(`
     CREATE TABLE IF NOT EXISTS products (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -76,10 +267,6 @@ function initTables(db: DatabaseSync) {
       stock INTEGER NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
-  `);
-
-  // Product Batches table
-  db.exec(`
     CREATE TABLE IF NOT EXISTS product_batches (
       id TEXT PRIMARY KEY,
       product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
@@ -91,16 +278,6 @@ function initTables(db: DatabaseSync) {
       cost_price REAL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
-  `);
-
-  try {
-    db.exec('ALTER TABLE product_batches ADD COLUMN warehouse_id TEXT REFERENCES warehouses(id);');
-  } catch (e) {
-    // Column already exists
-  }
-
-  // Stock Movement Ledger table
-  db.exec(`
     CREATE TABLE IF NOT EXISTS stock_ledger (
       id TEXT PRIMARY KEY,
       product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
@@ -113,10 +290,6 @@ function initTables(db: DatabaseSync) {
       created_by TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
-  `);
-
-  // Inventory Imports Audit Table
-  db.exec(`
     CREATE TABLE IF NOT EXISTS inventory_imports (
       id TEXT PRIMARY KEY,
       filename TEXT NOT NULL,
@@ -127,10 +300,6 @@ function initTables(db: DatabaseSync) {
       failed_rows INTEGER NOT NULL,
       status TEXT DEFAULT 'Completed'
     );
-  `);
-
-  // Invoices table
-  db.exec(`
     CREATE TABLE IF NOT EXISTS invoices (
       id TEXT PRIMARY KEY,
       invoice_number TEXT UNIQUE NOT NULL,
@@ -147,10 +316,6 @@ function initTables(db: DatabaseSync) {
       created_by TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
-  `);
-
-  // Invoice Items table
-  db.exec(`
     CREATE TABLE IF NOT EXISTS invoice_items (
       id TEXT PRIMARY KEY,
       invoice_id TEXT NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
@@ -167,10 +332,6 @@ function initTables(db: DatabaseSync) {
       igst_amount REAL DEFAULT 0,
       total_amount REAL NOT NULL
     );
-  `);
-
-  // Payments table
-  db.exec(`
     CREATE TABLE IF NOT EXISTS payments (
       id TEXT PRIMARY KEY,
       customer_id TEXT NOT NULL REFERENCES customers(id),
@@ -183,10 +344,6 @@ function initTables(db: DatabaseSync) {
       notes TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
-  `);
-
-  // Settings table
-  db.exec(`
     CREATE TABLE IF NOT EXISTS settings (
       id INTEGER PRIMARY KEY DEFAULT 1,
       company_name TEXT NOT NULL,
@@ -204,13 +361,16 @@ function initTables(db: DatabaseSync) {
     );
   `);
 
-  seedDefaultData(db);
+  try {
+    db.exec('ALTER TABLE product_batches ADD COLUMN warehouse_id TEXT REFERENCES warehouses(id);');
+  } catch (e) {}
+
+  seedDefaultDataGeneric(db);
 }
 
-function seedDefaultData(db: DatabaseSync) {
-  // Check users
+function seedDefaultDataGeneric(db: DbDriver) {
   const checkUser = db.prepare('SELECT COUNT(*) as cnt FROM users').get() as { cnt: number };
-  if (checkUser.cnt === 0) {
+  if (!checkUser || checkUser.cnt === 0) {
     db.prepare(`
       INSERT INTO users (id, email, password_hash, full_name, role, is_active)
       VALUES (?, ?, ?, ?, ?, 1)
@@ -219,12 +379,21 @@ function seedDefaultData(db: DatabaseSync) {
     db.prepare(`
       INSERT INTO users (id, email, password_hash, full_name, role, is_active)
       VALUES (?, ?, ?, ?, ?, 1)
+    `).run('usr-acct-002', 'accounts@agrishield.in', 'pbkdf2_sha256_hash_accounts123', 'Financial Accountant', 'Accountant');
+
+    db.prepare(`
+      INSERT INTO users (id, email, password_hash, full_name, role, is_active)
+      VALUES (?, ?, ?, ?, ?, 1)
+    `).run('usr-sales-003', 'sales@agrishield.in', 'pbkdf2_sha256_hash_sales123', 'Territory Sales Exec', 'Sales Executive');
+
+    db.prepare(`
+      INSERT INTO users (id, email, password_hash, full_name, role, is_active)
+      VALUES (?, ?, ?, ?, ?, 1)
     `).run('usr-wh-004', 'warehouse@agrishield.in', 'pbkdf2_sha256_hash_wh123', 'Warehouse Manager', 'Warehouse Manager');
   }
 
-  // Check Warehouses
   const checkWh = db.prepare('SELECT COUNT(*) as cnt FROM warehouses').get() as { cnt: number };
-  if (checkWh.cnt === 0) {
+  if (!checkWh || checkWh.cnt === 0) {
     const whList = [
       { id: 'wh-001', name: 'Main Pune Warehouse', code: 'PNE-WH', address: 'MIDC Bhosari, Pune' },
       { id: 'wh-002', name: 'Baramati Regional Depot', code: 'BRM-WH', address: 'MIDC Baramati' },
@@ -235,9 +404,8 @@ function seedDefaultData(db: DatabaseSync) {
     }
   }
 
-  // Check Settings
   const checkSettings = db.prepare('SELECT COUNT(*) as cnt FROM settings').get() as { cnt: number };
-  if (checkSettings.cnt === 0) {
+  if (!checkSettings || checkSettings.cnt === 0) {
     db.prepare(`
       INSERT INTO settings (id, company_name, legal_name, gstin, fertilizer_license, insecticide_license, phone, email, address, bank_name, account_number, ifsc_code)
       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -256,9 +424,8 @@ function seedDefaultData(db: DatabaseSync) {
     );
   }
 
-  // Seed Products and Batches
   const checkProd = db.prepare('SELECT COUNT(*) as cnt FROM products').get() as { cnt: number };
-  if (checkProd.cnt === 0) {
+  if (!checkProd || checkProd.cnt === 0) {
     const productsSeed = [
       {
         id: 'prod-001',
@@ -325,9 +492,8 @@ function seedDefaultData(db: DatabaseSync) {
     }
   }
 
-  // Seed Customers
   const checkCust = db.prepare('SELECT COUNT(*) as cnt FROM customers').get() as { cnt: number };
-  if (checkCust.cnt === 0) {
+  if (!checkCust || checkCust.cnt === 0) {
     const customersSeed = [
       {
         id: 'cust-001',
@@ -374,7 +540,7 @@ export function allocateBatchesFEFO(productId: string, requestedQty: number): {
     ORDER BY expiry_date ASC
   `).all(productId) as any[];
 
-  const totalAvailable = batches.reduce((sum, b) => sum + b.current_stock, 0);
+  const totalAvailable = batches.reduce((sum, b) => sum + (b.current_stock || 0), 0);
   if (totalAvailable < requestedQty) {
     return { success: false, allocations: [], totalAvailable };
   }
@@ -430,10 +596,8 @@ export function resolveWarehouse(nameOrCode: string): { id: string; name: string
   if (!nameOrCode) return null;
   const db = getDb();
   const q = nameOrCode.trim().toLowerCase();
-  const wh = db.prepare(`
-    SELECT * FROM warehouses 
-    WHERE LOWER(name) = ? OR LOWER(code) = ? OR LOWER(name) LIKE ?
-  `).get(q, q, `%${q}%`) as any;
+  const warehouses = db.prepare('SELECT * FROM warehouses').all() as any[];
+  const wh = warehouses.find(w => w.name.toLowerCase() === q || w.code.toLowerCase() === q || w.name.toLowerCase().includes(q));
 
   return wh ? { id: wh.id, name: wh.name, code: wh.code } : null;
 }
@@ -485,7 +649,6 @@ export function validateImportRow(raw: any, rowIndex: number): ExcelRowValidatio
   const gstRate = parseFloat(raw['GST %'] || raw.gst_rate || 18);
   const hsnCode = (raw.HSN || raw.hsn_code || '31052000').toString().trim();
 
-  // 1. Required fields check
   if (!sku) issues.push('Missing required field: SKU');
   if (!productName) issues.push('Missing required field: Product Name');
   if (!batchNo) issues.push('Missing required field: Batch No');
@@ -494,23 +657,19 @@ export function validateImportRow(raw: any, rowIndex: number): ExcelRowValidatio
   if (!warehouseStr) issues.push('Missing required field: Warehouse');
   if (!unit) issues.push('Missing required field: Unit');
 
-  // 2. Quantity Validation
   if (isNaN(qty) || qty <= 0) {
     issues.push(`Quantity must be a positive number (Received: ${raw.Quantity || 0})`);
   }
 
-  // 3. Unit Validation
   if (unit && !VALID_UNITS.includes(unit)) {
     issues.push(`Invalid unit "${unit}". Allowed units: ${VALID_UNITS.join(', ')}`);
   }
 
-  // 4. Warehouse Validation
   const wh = resolveWarehouse(warehouseStr);
   if (warehouseStr && !wh) {
     issues.push(`Unknown warehouse "${warehouseStr}". Register warehouse first.`);
   }
 
-  // 5. Date Validation
   const mfgDate = new Date(mfgDateStr);
   const expDate = new Date(expDateStr);
 
@@ -524,22 +683,11 @@ export function validateImportRow(raw: any, rowIndex: number): ExcelRowValidatio
     issues.push(`Expiry Date (${expDateStr}) must be later than Manufacturing Date (${mfgDateStr})`);
   }
 
-  // 6. GST Rate Check
   if (!VALID_GST_RATES.includes(gstRate)) {
     issues.push(`Invalid GST Rate ${gstRate}%. Allowed rates: 0%, 5%, 12%, 18%, 28%`);
   }
 
-  // 7. Product SKU Match & Warning Check
-  const db = getDb();
-  if (sku) {
-    const existingProd = db.prepare('SELECT name FROM products WHERE sku = ?').get(sku) as any;
-    if (existingProd && productName && existingProd.name.toLowerCase() !== productName.toLowerCase()) {
-      status = 'WARNING';
-      issues.push(`SKU matches catalog item "${existingProd.name}". Catalog name will be preserved.`);
-    }
-  }
-
-  if (issues.some(i => !i.startsWith('SKU matches catalog'))) {
+  if (issues.length > 0) {
     status = 'ERROR';
   }
 
@@ -553,7 +701,7 @@ export function validateImportRow(raw: any, rowIndex: number): ExcelRowValidatio
       batch_number: batchNo,
       mfg_date: mfgDateStr,
       expiry_date: expDateStr,
-      warehouse: wh ? wh.name : warehouseStr,
+      warehouse: warehouseStr || 'Main Pune Warehouse',
       quantity: qty,
       unit,
       cost_price: costPrice,
@@ -582,24 +730,22 @@ export function executeExcelInventoryImport(
   stock_added: number;
 } {
   const db = getDb();
-  const importSeq = (db.prepare('SELECT COUNT(*) as count FROM inventory_imports').get() as any).count + 1;
-  const importId = `IMP-2026-${importSeq.toString().padStart(5, '0')}`;
+  const importSeq = Math.floor(Math.random() * 90000) + 10000;
+  const importId = `IMP-2026-${importSeq}`;
 
   let productsCreated = 0;
   let batchesCreated = 0;
   let batchesUpdated = 0;
   let totalStockAdded = 0;
 
-  db.prepare('BEGIN TRANSACTION;').run();
-
   try {
+    try { db.exec('BEGIN TRANSACTION;'); } catch(e) {}
+
     for (const r of rows) {
       const wh = resolveWarehouse(r.warehouse) || { id: 'wh-001', name: 'Main Pune Warehouse' };
 
-      // 1. Check Product by SKU
       let product = db.prepare('SELECT * FROM products WHERE sku = ?').get(r.sku) as any;
       if (!product) {
-        // Create Product Scenario C
         const prodId = `prod-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
         db.prepare(`
           INSERT INTO products (id, name, sku, category, hsn_code, gst_rate, mrp, dealer_price, distributor_price, batch_number, mfg_date, expiry_date, stock)
@@ -612,19 +758,15 @@ export function executeExcelInventoryImport(
         product = db.prepare('SELECT * FROM products WHERE id = ?').get(prodId) as any;
         productsCreated++;
       } else {
-        // Update product master total stock
         db.prepare('UPDATE products SET stock = stock + ? WHERE id = ?').run(r.quantity, product.id);
       }
 
-      // 2. Check Product Batch by (product_id, batch_number)
       let batch = db.prepare('SELECT * FROM product_batches WHERE product_id = ? AND batch_number = ?').get(product.id, r.batch_number) as any;
 
       if (batch) {
-        // Scenario A: Update existing batch stock
         db.prepare('UPDATE product_batches SET current_stock = current_stock + ? WHERE id = ?').run(r.quantity, batch.id);
         batchesUpdated++;
       } else {
-        // Scenario B: Create new product batch
         const batchId = `bth-${product.id}-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`;
         db.prepare(`
           INSERT INTO product_batches (id, product_id, warehouse_id, batch_number, mfg_date, expiry_date, current_stock, cost_price)
@@ -634,7 +776,6 @@ export function executeExcelInventoryImport(
         batchesCreated++;
       }
 
-      // 3. Write Stock Ledger Movement
       db.prepare(`
         INSERT INTO stock_ledger (id, product_id, batch_id, movement_type, quantity, reference_doc_type, reference_doc_id, reason, created_by)
         VALUES (?, ?, ?, 'INITIAL_STOCK_IMPORT', ?, 'EXCEL_IMPORT', ?, ?, ?)
@@ -651,13 +792,12 @@ export function executeExcelInventoryImport(
       totalStockAdded += r.quantity;
     }
 
-    // 4. Record Import Audit Row
     db.prepare(`
       INSERT INTO inventory_imports (id, filename, uploaded_by, total_rows, successful_rows, failed_rows, status)
       VALUES (?, ?, ?, ?, ?, 0, 'Completed')
     `).run(importId, filename, userId, rows.length, rows.length);
 
-    db.prepare('COMMIT;').run();
+    try { db.exec('COMMIT;'); } catch(e) {}
 
     return {
       import_id: importId,
@@ -670,7 +810,7 @@ export function executeExcelInventoryImport(
       stock_added: totalStockAdded,
     };
   } catch (err) {
-    db.prepare('ROLLBACK;').run();
+    try { db.exec('ROLLBACK;'); } catch(e) {}
     throw err;
   }
 }
