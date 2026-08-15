@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
-import { executeExcelInventoryImport } from '@/lib/db';
+import { ensureDbReady, executeExcelInventoryImport } from '@/lib/db';
 import { parseAuthToken, checkPermission, formatErrorResponse } from '@/lib/auth';
 
 export async function POST(request: Request) {
+  await ensureDbReady();
   try {
     const user = parseAuthToken(request);
     const perm = checkPermission(user, 'CREATE', 'inventory');

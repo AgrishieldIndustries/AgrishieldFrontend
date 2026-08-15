@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
-import { getDb, allocateBatchesFEFO, checkCreditLimit } from '@/lib/db';
+import { ensureDbReady, getDb, allocateBatchesFEFO, checkCreditLimit } from '@/lib/db';
 import { parseAuthToken, checkPermission, formatErrorResponse } from '@/lib/auth';
 
 export async function GET() {
+  await ensureDbReady();
   try {
     const db = getDb();
     const invoices = db.prepare('SELECT * FROM invoices ORDER BY created_at DESC').all() as any[];
@@ -19,6 +20,7 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  await ensureDbReady();
   try {
     const user = parseAuthToken(request);
     // Default to admin user context if in public demo mode

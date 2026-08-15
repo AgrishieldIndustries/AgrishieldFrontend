@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server';
-import { getDb } from '@/lib/db';
+import { ensureDbReady, getDb } from '@/lib/db';
 import { parseAuthToken, checkPermission, formatErrorResponse } from '@/lib/auth';
 
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  await ensureDbReady();
   try {
     const { id } = await params;
     const db = getDb();
@@ -23,6 +24,7 @@ export async function PUT(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  await ensureDbReady();
   try {
     const user = parseAuthToken(request);
     const perm = checkPermission(user, 'UPDATE', 'customers');
@@ -60,6 +62,7 @@ export async function DELETE(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  await ensureDbReady();
   try {
     const user = parseAuthToken(request);
     const perm = checkPermission(user, 'DELETE', 'customers');

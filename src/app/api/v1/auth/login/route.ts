@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
-import { getDb } from '@/lib/db';
+import { getDb, ensureDbReady } from '@/lib/db';
 
 export async function POST(request: Request) {
+  await ensureDbReady();
   try {
     let username = '';
     let password = '';

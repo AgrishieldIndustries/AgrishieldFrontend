@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
-import { getDb } from '@/lib/db';
+import { ensureDbReady, getDb } from '@/lib/db';
 
 export async function GET() {
+  await ensureDbReady();
   try {
     const db = getDb();
 

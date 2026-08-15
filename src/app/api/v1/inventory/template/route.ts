@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
+import { ensureDbReady } from '@/lib/db';
 import * as XLSX from 'xlsx';
 
 export async function GET() {
+  await ensureDbReady();
   try {
     const headers = [
       'SKU',

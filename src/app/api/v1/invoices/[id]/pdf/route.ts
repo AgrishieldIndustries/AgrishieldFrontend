@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server';
-import { getDb } from '@/lib/db';
+import { ensureDbReady, getDb } from '@/lib/db';
 
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  await ensureDbReady();
   try {
     const { id } = await params;
     const db = getDb();

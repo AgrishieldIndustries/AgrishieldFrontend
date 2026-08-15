@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
 import * as XLSX from 'xlsx';
-import { validateImportRow } from '@/lib/db';
+import { ensureDbReady, validateImportRow } from '@/lib/db';
 import { parseAuthToken, checkPermission, formatErrorResponse } from '@/lib/auth';
 
 export async function POST(request: Request) {
+  await ensureDbReady();
   try {
     const user = parseAuthToken(request);
     const perm = checkPermission(user, 'CREATE', 'inventory');
