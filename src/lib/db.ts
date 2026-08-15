@@ -1,7 +1,9 @@
 import { DatabaseSync } from 'node:sqlite';
 import path from 'path';
 
-const dbPath = path.join(process.cwd(), 'agrishield.db');
+const isVercel = !!process.env.VERCEL || process.env.NODE_ENV === 'production';
+const dbDir = isVercel ? '/tmp' : process.cwd();
+const dbPath = path.join(dbDir, 'agrishield.db');
 let dbInstance: DatabaseSync | null = null;
 
 export function getDb(): DatabaseSync {
