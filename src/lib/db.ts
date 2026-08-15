@@ -1,5 +1,8 @@
 import path from 'path';
 
+/* ──────────────────────────────────────────────
+ * Universal Database Driver Interface
+ * ──────────────────────────────────────────────*/
 export interface DbStatement {
   get(...params: any[]): any;
   all(...params: any[]): any[];
@@ -13,213 +16,117 @@ export interface DbDriver {
 
 let dbInstance: DbDriver | null = null;
 
-// In-Memory Database Fallback Engine for Vercel / Serverless Environments
-class MemoryDb implements DbDriver {
-  private tables: Record<string, any[]> = {
-    users: [],
-    customers: [],
-    products: [],
-    product_batches: [],
-    stock_ledger: [],
-    invoices: [],
-    invoice_items: [],
-    payments: [],
-    settings: [],
-    warehouses: [],
-    inventory_imports: [],
-  };
+/* ──────────────────────────────────────────────
+ * better-sqlite3 Adapter
+ * Wraps better-sqlite3's API to match our DbDriver interface
+ * ──────────────────────────────────────────────*/
+class BetterSqliteDriver implements DbDriver {
+  private db: any;
+
+  constructor(dbPath: string) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const Database = require('better-sqlite3');
+    this.db = new Database(dbPath);
+    this.db.pragma('journal_mode = WAL');
+    this.db.pragma('foreign_keys = ON');
+  }
 
   exec(sql: string): void {
-    // Basic table creation / pragma commands ignored or initialized
+    this.db.exec(sql);
   }
 
   prepare(sql: string): DbStatement {
-    const self = this;
-    const cleanSql = sql.trim();
-    const upperSql = cleanSql.toUpperCase();
-
+    const stmt = this.db.prepare(sql);
     return {
       get(...params: any[]) {
-        const results = self.executeQuery(cleanSql, params);
-        return results.length > 0 ? results[0] : undefined;
+        return stmt.get(...params);
       },
       all(...params: any[]) {
-        return self.executeQuery(cleanSql, params);
+        return stmt.all(...params);
       },
       run(...params: any[]) {
-        self.executeMutation(cleanSql, params);
-        return { changes: 1 };
-      }
+        return stmt.run(...params);
+      },
     };
-  }
-
-  private executeQuery(sql: string, params: any[]): any[] {
-    const upper = sql.toUpperCase();
-
-    // SELECT COUNT(*)
-    if (upper.includes('SELECT COUNT(*)')) {
-      const tableName = this.extractTable(sql);
-      const rows = this.tables[tableName] || [];
-      return [{ cnt: rows.length, count: rows.length }];
-    }
-
-    // SELECT BY ID / EMAIL / SKU
-    if (upper.includes('FROM USERS')) {
-      if (params.length > 0) {
-        const val = params[0];
-        return this.tables.users.filter(u => u.email === val || u.id === val);
-      }
-      return this.tables.users;
-    }
-
-    if (upper.includes('FROM CUSTOMERS')) {
-      if (upper.includes('WHERE ID =')) {
-        return this.tables.customers.filter(c => c.id === params[0]);
-      }
-      return this.tables.customers;
-    }
-
-    if (upper.includes('FROM PRODUCTS')) {
-      if (upper.includes('WHERE ID =')) return this.tables.products.filter(p => p.id === params[0]);
-      if (upper.includes('WHERE SKU =')) return this.tables.products.filter(p => p.sku === params[0]);
-      return this.tables.products;
-    }
-
-    if (upper.includes('FROM PRODUCT_BATCHES')) {
-      if (upper.includes('WHERE PRODUCT_ID =') && upper.includes('BATCH_NUMBER =')) {
-        return this.tables.product_batches.filter(b => b.product_id === params[0] && b.batch_number === params[1]);
-      }
-      if (upper.includes('WHERE PRODUCT_ID =')) {
-        return this.tables.product_batches.filter(b => b.product_id === params[0]);
-      }
-      if (upper.includes('WHERE BATCH_NUMBER =')) {
-        return this.tables.product_batches.filter(b => b.batch_number === params[0]);
-      }
-      return this.tables.product_batches;
-    }
-
-    if (upper.includes('FROM WAREHOUSES')) {
-      if (params.length > 0) {
-        const q = (params[0] || '').toString().toLowerCase();
-        return this.tables.warehouses.filter(w => w.name.toLowerCase() === q || w.code.toLowerCase() === q);
-      }
-      return this.tables.warehouses;
-    }
-
-    if (upper.includes('FROM SETTINGS')) {
-      return this.tables.settings.length > 0 ? [this.tables.settings[0]] : [];
-    }
-
-    if (upper.includes('FROM INVOICES')) {
-      if (upper.includes('WHERE ID =')) return this.tables.invoices.filter(i => i.id === params[0]);
-      return this.tables.invoices;
-    }
-
-    if (upper.includes('FROM INVOICE_ITEMS')) {
-      if (upper.includes('WHERE INVOICE_ID =')) return this.tables.invoice_items.filter(i => i.invoice_id === params[0]);
-      return this.tables.invoice_items;
-    }
-
-    if (upper.includes('FROM STOCK_LEDGER')) {
-      return this.tables.stock_ledger;
-    }
-
-    if (upper.includes('FROM PAYMENTS')) {
-      return this.tables.payments;
-    }
-
-    return [];
-  }
-
-  private executeMutation(sql: string, params: any[]): void {
-    const upper = sql.toUpperCase();
-
-    if (upper.includes('INSERT INTO USERS')) {
-      this.tables.users.push({
-        id: params[0], email: params[1], password_hash: params[2], full_name: params[3], role: params[4], is_active: 1
-      });
-    } else if (upper.includes('INSERT INTO WAREHOUSES')) {
-      this.tables.warehouses.push({ id: params[0], name: params[1], code: params[2], address: params[3] });
-    } else if (upper.includes('INSERT INTO SETTINGS')) {
-      this.tables.settings = [{
-        id: 1, company_name: params[0], legal_name: params[1], gstin: params[2], fertilizer_license: params[3],
-        insecticide_license: params[4], phone: params[5], email: params[6], address: params[7], bank_name: params[8], account_number: params[9], ifsc_code: params[10]
-      }];
-    } else if (upper.includes('INSERT INTO PRODUCTS')) {
-      this.tables.products.push({
-        id: params[0], name: params[1], sku: params[2], category: params[3], npk_ratio: params[4], hsn_code: params[5],
-        gst_rate: params[6], mrp: params[7], dealer_price: params[8], distributor_price: params[9], batch_number: params[10],
-        mfg_date: params[11], expiry_date: params[12], stock: params[13]
-      });
-    } else if (upper.includes('INSERT INTO PRODUCT_BATCHES')) {
-      this.tables.product_batches.push({
-        id: params[0], product_id: params[1], warehouse_id: params[2], batch_number: params[3], mfg_date: params[4], expiry_date: params[5], current_stock: params[6], cost_price: params[7]
-      });
-    } else if (upper.includes('INSERT INTO STOCK_LEDGER')) {
-      this.tables.stock_ledger.push({
-        id: params[0], product_id: params[1], batch_id: params[2], movement_type: params[3], quantity: params[4], reference_doc_type: params[5], reference_doc_id: params[6], reason: params[7], created_by: params[8], created_at: new Date().toISOString()
-      });
-    } else if (upper.includes('INSERT INTO CUSTOMERS')) {
-      this.tables.customers.push({
-        id: params[0], name: params[1], shop_name: params[2], phone: params[3], gstin: params[4], billing_address: params[5], shipping_address: params[6], credit_limit: params[7], outstanding_balance: params[8]
-      });
-    } else if (upper.includes('INSERT INTO INVOICES')) {
-      this.tables.invoices.push({
-        id: params[0], invoice_number: params[1], customer_id: params[2], invoice_date: params[3], subtotal: params[4], cgst_total: params[5], sgst_total: params[6], igst_total: params[7], transport_charges: params[8], grand_total: params[9], terms: params[10], status: 'Unpaid', created_by: params[11], created_at: new Date().toISOString()
-      });
-    } else if (upper.includes('INSERT INTO INVOICE_ITEMS')) {
-      this.tables.invoice_items.push({
-        id: params[0], invoice_id: params[1], product_id: params[2], product_name: params[3], sku: params[4], quantity: params[5], rate: params[6], discount_pct: params[7], subtotal: params[8], gst_rate: params[9], cgst_amount: params[10], sgst_amount: params[11], igst_amount: params[12], total_amount: params[13]
-      });
-    } else if (upper.includes('INSERT INTO INVENTORY_IMPORTS')) {
-      this.tables.inventory_imports.push({
-        id: params[0], filename: params[1], uploaded_by: params[2], total_rows: params[3], successful_rows: params[4], failed_rows: params[5], status: params[6]
-      });
-    } else if (upper.includes('UPDATE PRODUCTS SET STOCK = STOCK +')) {
-      const prod = this.tables.products.find(p => p.id === params[1]);
-      if (prod) prod.stock += params[0];
-    } else if (upper.includes('UPDATE PRODUCT_BATCHES SET CURRENT_STOCK = CURRENT_STOCK +')) {
-      const batch = this.tables.product_batches.find(b => b.id === params[1]);
-      if (batch) batch.current_stock += params[0];
-    } else if (upper.includes('UPDATE CUSTOMERS SET OUTSTANDING_BALANCE = OUTSTANDING_BALANCE +')) {
-      const cust = this.tables.customers.find(c => c.id === params[1]);
-      if (cust) cust.outstanding_balance += params[0];
-    }
-  }
-
-  private extractTable(sql: string): string {
-    const parts = sql.toLowerCase().split('from ');
-    if (parts.length > 1) {
-      return parts[1].split(' ')[0].trim();
-    }
-    return '';
   }
 }
 
+/* ──────────────────────────────────────────────
+ * node:sqlite Adapter (Node 24+)
+ * ──────────────────────────────────────────────*/
+class NativeSqliteDriver implements DbDriver {
+  private db: any;
+
+  constructor(dbPath: string) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { DatabaseSync } = require('node:sqlite');
+    this.db = new DatabaseSync(dbPath);
+    this.db.exec('PRAGMA foreign_keys = ON;');
+  }
+
+  exec(sql: string): void {
+    this.db.exec(sql);
+  }
+
+  prepare(sql: string): DbStatement {
+    const stmt = this.db.prepare(sql);
+    return {
+      get(...params: any[]) {
+        return stmt.get(...params);
+      },
+      all(...params: any[]) {
+        return stmt.all(...params);
+      },
+      run(...params: any[]) {
+        return stmt.run(...params);
+      },
+    };
+  }
+}
+
+/* ──────────────────────────────────────────────
+ * getDb() — Singleton Database Provider
+ *
+ * Strategy:
+ *   1. Try node:sqlite  (Node 24+ local dev)
+ *   2. Fall back to better-sqlite3  (Vercel / Node 18-22)
+ *
+ * On Vercel the filesystem is read-only except /tmp,
+ * so we place the DB file there. Data re-seeds on
+ * every cold start (acceptable for staging/demo).
+ * ──────────────────────────────────────────────*/
 export function getDb(): DbDriver {
   if (!dbInstance) {
-    try {
-      // Attempt loading node:sqlite dynamically
-      const { DatabaseSync } = require('node:sqlite');
-      const isVercel = !!process.env.VERCEL || process.env.NODE_ENV === 'production';
-      const dbDir = isVercel ? '/tmp' : process.cwd();
-      const dbPath = path.join(dbDir, 'agrishield.db');
+    const isVercel = !!process.env.VERCEL || !!process.env.VERCEL_ENV;
+    const dbDir = isVercel ? '/tmp' : process.cwd();
+    const dbPath = path.join(dbDir, 'agrishield.db');
 
-      const nativeDb = new DatabaseSync(dbPath);
-      nativeDb.exec('PRAGMA foreign_keys = ON;');
-      initTablesNative(nativeDb);
-      dbInstance = nativeDb as any;
-    } catch (e) {
-      console.warn('Native node:sqlite unavailable in current runtime. Falling back to universal in-memory DB engine.');
-      const memDb = new MemoryDb();
-      seedDefaultDataGeneric(memDb);
-      dbInstance = memDb;
+    // Strategy 1: native node:sqlite (Node 24+)
+    try {
+      dbInstance = new NativeSqliteDriver(dbPath);
+      console.log('[DB] Using native node:sqlite →', dbPath);
+    } catch {
+      // Strategy 2: better-sqlite3 (universal fallback)
+      try {
+        dbInstance = new BetterSqliteDriver(dbPath);
+        console.log('[DB] Using better-sqlite3 →', dbPath);
+      } catch (e2: any) {
+        // Strategy 3: better-sqlite3 in-memory (last resort)
+        console.warn('[DB] File DB failed, using in-memory better-sqlite3:', e2.message);
+        dbInstance = new BetterSqliteDriver(':memory:');
+      }
     }
+
+    initSchema(dbInstance!);
+    seedDefaultData(dbInstance!);
   }
   return dbInstance!;
 }
 
-function initTablesNative(db: any) {
+/* ──────────────────────────────────────────────
+ * Schema Initialisation
+ * ──────────────────────────────────────────────*/
+function initSchema(db: DbDriver) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
@@ -360,15 +267,13 @@ function initTablesNative(db: any) {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
   `);
-
-  try {
-    db.exec('ALTER TABLE product_batches ADD COLUMN warehouse_id TEXT REFERENCES warehouses(id);');
-  } catch (e) {}
-
-  seedDefaultDataGeneric(db);
 }
 
-function seedDefaultDataGeneric(db: DbDriver) {
+/* ──────────────────────────────────────────────
+ * Seed Default Data
+ * ──────────────────────────────────────────────*/
+function seedDefaultData(db: DbDriver) {
+  // Users
   const checkUser = db.prepare('SELECT COUNT(*) as cnt FROM users').get() as { cnt: number };
   if (!checkUser || checkUser.cnt === 0) {
     db.prepare(`
@@ -392,6 +297,7 @@ function seedDefaultDataGeneric(db: DbDriver) {
     `).run('usr-wh-004', 'warehouse@agrishield.in', 'pbkdf2_sha256_hash_wh123', 'Warehouse Manager', 'Warehouse Manager');
   }
 
+  // Warehouses
   const checkWh = db.prepare('SELECT COUNT(*) as cnt FROM warehouses').get() as { cnt: number };
   if (!checkWh || checkWh.cnt === 0) {
     const whList = [
@@ -404,6 +310,7 @@ function seedDefaultDataGeneric(db: DbDriver) {
     }
   }
 
+  // Settings
   const checkSettings = db.prepare('SELECT COUNT(*) as cnt FROM settings').get() as { cnt: number };
   if (!checkSettings || checkSettings.cnt === 0) {
     db.prepare(`
@@ -424,6 +331,7 @@ function seedDefaultDataGeneric(db: DbDriver) {
     );
   }
 
+  // Products & Batches
   const checkProd = db.prepare('SELECT COUNT(*) as cnt FROM products').get() as { cnt: number };
   if (!checkProd || checkProd.cnt === 0) {
     const productsSeed = [
@@ -492,6 +400,7 @@ function seedDefaultDataGeneric(db: DbDriver) {
     }
   }
 
+  // Customers
   const checkCust = db.prepare('SELECT COUNT(*) as cnt FROM customers').get() as { cnt: number };
   if (!checkCust || checkCust.cnt === 0) {
     const customersSeed = [
@@ -516,6 +425,10 @@ function seedDefaultDataGeneric(db: DbDriver) {
     }
   }
 }
+
+/* ══════════════════════════════════════════════
+ * BUSINESS LOGIC ENGINES
+ * ══════════════════════════════════════════════*/
 
 /**
  * FEFO (First Expiring, First Out) Stock Allocation Engine
@@ -739,7 +652,7 @@ export function executeExcelInventoryImport(
   let totalStockAdded = 0;
 
   try {
-    try { db.exec('BEGIN TRANSACTION;'); } catch(e) {}
+    try { db.exec('BEGIN TRANSACTION;'); } catch(e) { /* ignore if already in transaction */ }
 
     for (const r of rows) {
       const wh = resolveWarehouse(r.warehouse) || { id: 'wh-001', name: 'Main Pune Warehouse' };
@@ -797,7 +710,7 @@ export function executeExcelInventoryImport(
       VALUES (?, ?, ?, ?, ?, 0, 'Completed')
     `).run(importId, filename, userId, rows.length, rows.length);
 
-    try { db.exec('COMMIT;'); } catch(e) {}
+    try { db.exec('COMMIT;'); } catch(e) { /* ignore */ }
 
     return {
       import_id: importId,
@@ -810,7 +723,7 @@ export function executeExcelInventoryImport(
       stock_added: totalStockAdded,
     };
   } catch (err) {
-    try { db.exec('ROLLBACK;'); } catch(e) {}
+    try { db.exec('ROLLBACK;'); } catch(e) { /* ignore */ }
     throw err;
   }
 }
