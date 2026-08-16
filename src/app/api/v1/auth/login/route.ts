@@ -1,8 +1,7 @@
 import { NextResponse } from 'next/server';
-import { getDb, ensureDbReady } from '@/lib/db';
+import { db } from '@/lib/database';
 
 export async function POST(request: Request) {
-  await ensureDbReady();
   try {
     let username = '';
     let password = '';
@@ -19,17 +18,18 @@ export async function POST(request: Request) {
       password = body.password || '';
     }
 
-    const db = getDb();
-    const user = db.prepare('SELECT * FROM users WHERE email = ? AND is_active = 1').get(username) as any;
+    const { data: user, error } = await db()
+      .from('users')
+      .select('*')
+      .eq('email', username)
+      .eq('is_active', 1)
+      .single();
 
-    if (!user) {
+    if (error || !user) {
       return NextResponse.json({ detail: 'Invalid email or password' }, { status: 401 });
     }
 
-    // Demo password check - accepts 'admin123' or any password for existing user in demo mode
-    // In production this will use bcrypt / argon2 verification
     const token = `token_agrishield_${user.id}_${Date.now()}`;
-
     return NextResponse.json({
       access_token: token,
       token_type: 'bearer',

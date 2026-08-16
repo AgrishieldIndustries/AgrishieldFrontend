@@ -1,82 +1,50 @@
 import { NextResponse } from 'next/server';
-import { ensureDbReady, getDb } from '@/lib/db';
+import { db } from '@/lib/database';
 
 export async function GET() {
-  await ensureDbReady();
   try {
-    const db = getDb();
-    const products = db.prepare('SELECT * FROM products ORDER BY created_at DESC').all();
-    return NextResponse.json(products);
+    const { data, error } = await db().from('products').select('*').order('created_at', { ascending: false });
+    if (error) throw error;
+    return NextResponse.json(data);
   } catch (error: any) {
     return NextResponse.json({ detail: error.message }, { status: 500 });
   }
 }
 
 export async function POST(request: Request) {
-  await ensureDbReady();
   try {
     const body = await request.json();
-    const db = getDb();
     const id = `prod-${Date.now()}`;
     const batchId = `bth-${id}-01`;
 
-    // Database Transaction for Product + Batch + Stock Ledger
-    db.prepare('BEGIN TRANSACTION;').run();
+    // 1. Insert product
+    const { error: pErr } = await db().from('products').insert({
+      id, name: body.name, sku: body.sku, category: body.category,
+      npk_ratio: body.npk_ratio || null, hsn_code: body.hsn_code,
+      gst_rate: body.gst_rate || 18, mrp: body.mrp, dealer_price: body.dealer_price,
+      distributor_price: body.distributor_price, batch_number: body.batch_number,
+      mfg_date: body.mfg_date, expiry_date: body.expiry_date, stock: body.stock || 0,
+    });
+    if (pErr) throw pErr;
 
-    try {
-      // 1. Insert product master
-      db.prepare(`
-        INSERT INTO products (
-          id, name, sku, category, npk_ratio, hsn_code, gst_rate, mrp,
-          dealer_price, distributor_price, batch_number, mfg_date, expiry_date, stock
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        id,
-        body.name,
-        body.sku,
-        body.category,
-        body.npk_ratio || null,
-        body.hsn_code,
-        body.gst_rate || 18,
-        body.mrp,
-        body.dealer_price,
-        body.distributor_price,
-        body.batch_number,
-        body.mfg_date,
-        body.expiry_date,
-        body.stock || 0
-      );
+    // 2. Insert initial batch
+    await db().from('product_batches').insert({
+      id: batchId, product_id: id, batch_number: body.batch_number,
+      mfg_date: body.mfg_date, expiry_date: body.expiry_date,
+      current_stock: body.stock || 0, cost_price: body.dealer_price * 0.7,
+    });
 
-      // 2. Insert initial product batch
-      db.prepare(`
-        INSERT INTO product_batches (id, product_id, batch_number, mfg_date, expiry_date, current_stock, cost_price)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        batchId,
-        id,
-        body.batch_number,
-        body.mfg_date,
-        body.expiry_date,
-        body.stock || 0,
-        body.dealer_price * 0.7
-      );
-
-      // 3. Insert stock movement audit log
-      if (body.stock > 0) {
-        db.prepare(`
-          INSERT INTO stock_ledger (id, product_id, batch_id, movement_type, quantity, reason, created_by)
-          VALUES (?, ?, ?, 'MANUAL_INBOUND', ?, 'Initial product creation stock', 'usr-admin-001')
-        `).run(`stk-${Date.now()}`, id, batchId, body.stock);
-      }
-
-      db.prepare('COMMIT;').run();
-
-      const created = db.prepare('SELECT * FROM products WHERE id = ?').get(id);
-      return NextResponse.json(created, { status: 201 });
-    } catch (err) {
-      db.prepare('ROLLBACK;').run();
-      throw err;
+    // 3. Stock ledger entry
+    if (body.stock > 0) {
+      await db().from('stock_ledger').insert({
+        id: `stk-${Date.now()}`, product_id: id, batch_id: batchId,
+        movement_type: 'MANUAL_INBOUND', quantity: body.stock,
+        reason: 'Initial product creation stock', created_by: 'usr-admin-001',
+      });
     }
+
+    const { data: created } = await db().from('products').select('*').eq('id', id).single();
+    return NextResponse.json(created, { status: 201 });
   } catch (error: any) {
     return NextResponse.json({ detail: error.message || 'Failed to create product' }, { status: 400 });
   }

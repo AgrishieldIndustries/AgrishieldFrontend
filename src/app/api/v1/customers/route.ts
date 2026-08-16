@@ -1,40 +1,29 @@
 import { NextResponse } from 'next/server';
-import { ensureDbReady, getDb } from '@/lib/db';
+import { db } from '@/lib/database';
 
 export async function GET() {
-  await ensureDbReady();
   try {
-    const db = getDb();
-    const customers = db.prepare('SELECT * FROM customers ORDER BY created_at DESC').all();
-    return NextResponse.json(customers);
+    const { data, error } = await db().from('customers').select('*').order('created_at', { ascending: false });
+    if (error) throw error;
+    return NextResponse.json(data);
   } catch (error: any) {
     return NextResponse.json({ detail: error.message }, { status: 500 });
   }
 }
 
 export async function POST(request: Request) {
-  await ensureDbReady();
   try {
     const body = await request.json();
-    const db = getDb();
     const id = `cust-${Date.now()}`;
-
-    db.prepare(`
-      INSERT INTO customers (id, name, shop_name, phone, gstin, billing_address, shipping_address, credit_limit, outstanding_balance)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id,
-      body.name,
-      body.shop_name,
-      body.phone,
-      body.gstin || null,
-      body.billing_address,
-      body.shipping_address,
-      body.credit_limit || 0,
-      0 // Opening outstanding balance
-    );
-
-    const created = db.prepare('SELECT * FROM customers WHERE id = ?').get(id);
+    const row = {
+      id, name: body.name, shop_name: body.shop_name, phone: body.phone,
+      gstin: body.gstin || null, billing_address: body.billing_address,
+      shipping_address: body.shipping_address, credit_limit: body.credit_limit || 0,
+      outstanding_balance: 0,
+    };
+    const { error } = await db().from('customers').insert(row);
+    if (error) throw error;
+    const { data: created } = await db().from('customers').select('*').eq('id', id).single();
     return NextResponse.json(created, { status: 201 });
   } catch (error: any) {
     return NextResponse.json({ detail: error.message || 'Failed to create customer' }, { status: 400 });

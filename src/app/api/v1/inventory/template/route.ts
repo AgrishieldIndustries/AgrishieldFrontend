@@ -1,77 +1,19 @@
 import { NextResponse } from 'next/server';
-import { ensureDbReady } from '@/lib/db';
 import * as XLSX from 'xlsx';
 
 export async function GET() {
-  await ensureDbReady();
   try {
-    const headers = [
-      'SKU',
-      'Product Name',
-      'Batch No',
-      'Mfg Date',
-      'Expiry Date',
-      'Warehouse',
-      'Quantity',
-      'Unit',
-      'Cost Price',
-      'MRP',
-      'GST %',
-      'HSN'
-    ];
-
     const sampleRows = [
-      {
-        'SKU': 'AGR-WSF-191919-25K',
-        'Product Name': 'Water Soluble Fertilizer NPK 19:19:19 (25 Kg)',
-        'Batch No': 'BATCH-2026-X1',
-        'Mfg Date': '2026-05-01',
-        'Expiry Date': '2028-05-01',
-        'Warehouse': 'Main Pune Warehouse',
-        'Quantity': 250,
-        'Unit': 'BAG',
-        'Cost Price': 1680,
-        'MRP': 3200,
-        'GST %': 18,
-        'HSN': '31052000'
-      },
-      {
-        'SKU': 'AGR-FERT-CNB-25K',
-        'Product Name': 'Calcium Nitrate + Boron Granular (25 Kg)',
-        'Batch No': 'BATCH-2026-X2',
-        'Mfg Date': '2026-06-15',
-        'Expiry Date': '2028-06-15',
-        'Warehouse': 'Baramati Regional Depot',
-        'Quantity': 120,
-        'Unit': 'BAG',
-        'Cost Price': 1365,
-        'MRP': 2600,
-        'GST %': 18,
-        'HSN': '31026000'
-      }
+      { 'SKU': 'AGR-WSF-191919-25K', 'Product Name': 'Water Soluble Fertilizer NPK 19:19:19 (25 Kg)', 'Batch No': 'BATCH-2026-X1', 'Mfg Date': '2026-05-01', 'Expiry Date': '2028-05-01', 'Warehouse': 'Main Pune Warehouse', 'Quantity': 250, 'Unit': 'BAG', 'Cost Price': 1680, 'MRP': 3200, 'GST %': 18, 'HSN': '31052000' },
+      { 'SKU': 'AGR-FERT-CNB-25K', 'Product Name': 'Calcium Nitrate + Boron Granular (25 Kg)', 'Batch No': 'BATCH-2026-X2', 'Mfg Date': '2026-06-15', 'Expiry Date': '2028-06-15', 'Warehouse': 'Baramati Regional Depot', 'Quantity': 120, 'Unit': 'BAG', 'Cost Price': 1365, 'MRP': 2600, 'GST %': 18, 'HSN': '31026000' },
     ];
 
+    const headers = ['SKU', 'Product Name', 'Batch No', 'Mfg Date', 'Expiry Date', 'Warehouse', 'Quantity', 'Unit', 'Cost Price', 'MRP', 'GST %', 'HSN'];
     const worksheet = XLSX.utils.json_to_sheet(sampleRows, { header: headers });
-
-    // Set column widths
-    worksheet['!cols'] = [
-      { wch: 22 }, // SKU
-      { wch: 45 }, // Product Name
-      { wch: 18 }, // Batch No
-      { wch: 14 }, // Mfg Date
-      { wch: 14 }, // Expiry Date
-      { wch: 25 }, // Warehouse
-      { wch: 12 }, // Quantity
-      { wch: 10 }, // Unit
-      { wch: 12 }, // Cost Price
-      { wch: 12 }, // MRP
-      { wch: 10 }, // GST %
-      { wch: 12 }, // HSN
-    ];
+    worksheet['!cols'] = [{ wch: 22 }, { wch: 45 }, { wch: 18 }, { wch: 14 }, { wch: 14 }, { wch: 25 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 12 }];
 
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Stock Import Template');
-
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 
     return new NextResponse(buffer, {

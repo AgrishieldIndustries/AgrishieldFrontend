@@ -1,20 +1,15 @@
 import { NextResponse } from 'next/server';
-import { ensureDbReady, getDb } from '@/lib/db';
+import { db } from '@/lib/database';
 
-export async function GET(
-  request: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  await ensureDbReady();
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
-    const db = getDb();
-    const invoice = db.prepare('SELECT * FROM invoices WHERE id = ?').get(id) as any;
+    const { data: invoice } = await db().from('invoices').select('*').eq('id', id).single();
     if (!invoice) return NextResponse.json({ detail: 'Invoice not found' }, { status: 404 });
 
-    const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(invoice.customer_id) as any;
-    const items = db.prepare('SELECT * FROM invoice_items WHERE invoice_id = ?').all(id) as any[];
-    const settings = db.prepare('SELECT * FROM settings WHERE id = 1').get() as any;
+    const { data: customer } = await db().from('customers').select('*').eq('id', invoice.customer_id).single();
+    const { data: items } = await db().from('invoice_items').select('*').eq('invoice_id', id);
+    const { data: settings } = await db().from('settings').select('*').eq('id', 1).single();
 
     const printableText = `
 ================================================================================
@@ -36,7 +31,7 @@ Billing Address: ${customer?.billing_address || 'N/A'}
 --------------------------------------------------------------------------------
 ITEM DETAILS
 --------------------------------------------------------------------------------
-${items.map((it, idx) => `
+${(items || []).map((it: any, idx: number) => `
 ${idx + 1}. ${it.product_name} (SKU: ${it.sku})
    Qty: ${it.quantity} | Rate: ₹${it.rate} | Disc: ${it.discount_pct}% | Taxable: ₹${it.subtotal}
    GST Rate: ${it.gst_rate}% (CGST: ₹${it.cgst_amount}, SGST: ₹${it.sgst_amount}, IGST: ₹${it.igst_amount})

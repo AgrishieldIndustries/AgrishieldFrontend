@@ -1,11 +1,7 @@
 import { NextResponse } from 'next/server';
-import { ensureDbReady, getDb } from '@/lib/db';
+import { db } from '@/lib/database';
 
-export async function POST(
-  request: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  await ensureDbReady();
+export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     const body = await request.json();
@@ -15,45 +11,34 @@ export async function POST(
       return NextResponse.json({ detail: 'Quantity must be greater than 0' }, { status: 400 });
     }
 
-    const db = getDb();
-    const product = db.prepare('SELECT * FROM products WHERE id = ?').get(id) as any;
-
-    if (!product) {
-      return NextResponse.json({ detail: 'Product not found' }, { status: 404 });
-    }
+    const { data: product, error } = await db().from('products').select('*').eq('id', id).single();
+    if (error || !product) return NextResponse.json({ detail: 'Product not found' }, { status: 404 });
 
     const isInbound = adjustment_type === 'inbound';
     const newStock = isInbound ? product.stock + quantity : Math.max(0, product.stock - quantity);
     const movementType = isInbound ? 'MANUAL_INBOUND' : 'MANUAL_OUTBOUND';
 
-    // Start Transaction
-    db.prepare('BEGIN TRANSACTION;').run();
+    // 1. Update product stock
+    await db().from('products').update({ stock: newStock }).eq('id', id);
 
-    try {
-      // 1. Update product stock
-      db.prepare('UPDATE products SET stock = ? WHERE id = ?').run(newStock, id);
-
-      // 2. Update latest batch stock if available
-      const batch = db.prepare('SELECT * FROM product_batches WHERE product_id = ? ORDER BY created_at DESC LIMIT 1').get(id) as any;
-      if (batch) {
-        const newBatchStock = isInbound ? batch.current_stock + quantity : Math.max(0, batch.current_stock - quantity);
-        db.prepare('UPDATE product_batches SET current_stock = ? WHERE id = ?').run(newBatchStock, batch.id);
-      }
-
-      // 3. Record entry in stock_ledger
-      db.prepare(`
-        INSERT INTO stock_ledger (id, product_id, batch_id, movement_type, quantity, reason, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, 'usr-admin-001')
-      `).run(`stk-${Date.now()}`, id, batch?.id || null, movementType, isInbound ? quantity : -quantity, reason || 'Manual stock adjustment');
-
-      db.prepare('COMMIT;').run();
-
-      const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(id);
-      return NextResponse.json(updated);
-    } catch (err) {
-      db.prepare('ROLLBACK;').run();
-      throw err;
+    // 2. Update latest batch
+    const { data: batches } = await db().from('product_batches')
+      .select('*').eq('product_id', id).order('created_at', { ascending: false }).limit(1);
+    const batch = batches?.[0];
+    if (batch) {
+      const newBatchStock = isInbound ? batch.current_stock + quantity : Math.max(0, batch.current_stock - quantity);
+      await db().from('product_batches').update({ current_stock: newBatchStock }).eq('id', batch.id);
     }
+
+    // 3. Stock ledger
+    await db().from('stock_ledger').insert({
+      id: `stk-${Date.now()}`, product_id: id, batch_id: batch?.id || null,
+      movement_type: movementType, quantity: isInbound ? quantity : -quantity,
+      reason: reason || 'Manual stock adjustment', created_by: 'usr-admin-001',
+    });
+
+    const { data: updated } = await db().from('products').select('*').eq('id', id).single();
+    return NextResponse.json(updated);
   } catch (error: any) {
     return NextResponse.json({ detail: error.message || 'Failed to adjust stock' }, { status: 400 });
   }

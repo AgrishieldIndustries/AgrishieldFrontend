@@ -1,11 +1,10 @@
 import { NextResponse } from 'next/server';
-import { ensureDbReady, getDb } from '@/lib/db';
+import { db } from '@/lib/database';
 
 export async function GET() {
-  await ensureDbReady();
   try {
-    const db = getDb();
-    const settings = db.prepare('SELECT * FROM settings WHERE id = 1').get();
+    const { data: settings, error } = await db().from('settings').select('*').eq('id', 1).single();
+    if (error) throw error;
     return NextResponse.json(settings);
   } catch (error: any) {
     return NextResponse.json({ detail: error.message }, { status: 500 });
@@ -13,31 +12,17 @@ export async function GET() {
 }
 
 export async function PUT(request: Request) {
-  await ensureDbReady();
   try {
     const body = await request.json();
-    const db = getDb();
-
-    db.prepare(`
-      UPDATE settings 
-      SET company_name = ?, legal_name = ?, gstin = ?, fertilizer_license = ?,
-          insecticide_license = ?, phone = ?, email = ?, address = ?, bank_name = ?, account_number = ?, ifsc_code = ?, updated_at = CURRENT_TIMESTAMP
-      WHERE id = 1
-    `).run(
-      body.company_name,
-      body.legal_name,
-      body.gstin,
-      body.fertilizer_license || null,
-      body.insecticide_license || null,
-      body.phone || null,
-      body.email || null,
-      body.address || null,
-      body.bank_name || null,
-      body.account_number || null,
-      body.ifsc_code || null
-    );
-
-    const updated = db.prepare('SELECT * FROM settings WHERE id = 1').get();
+    const { error } = await db().from('settings').update({
+      company_name: body.company_name, legal_name: body.legal_name, gstin: body.gstin,
+      fertilizer_license: body.fertilizer_license || null, insecticide_license: body.insecticide_license || null,
+      phone: body.phone || null, email: body.email || null, address: body.address || null,
+      bank_name: body.bank_name || null, account_number: body.account_number || null,
+      ifsc_code: body.ifsc_code || null,
+    }).eq('id', 1);
+    if (error) throw error;
+    const { data: updated } = await db().from('settings').select('*').eq('id', 1).single();
     return NextResponse.json(updated);
   } catch (error: any) {
     return NextResponse.json({ detail: error.message || 'Failed to update settings' }, { status: 400 });

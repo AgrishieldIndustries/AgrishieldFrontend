@@ -1,80 +1,47 @@
 import { NextResponse } from 'next/server';
-import { ensureDbReady, getDb } from '@/lib/db';
+import { db } from '@/lib/database';
 import { parseAuthToken, checkPermission, formatErrorResponse } from '@/lib/auth';
 
-export async function GET(
-  request: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  await ensureDbReady();
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
-    const db = getDb();
-    const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(id);
-    if (!customer) {
-      return formatErrorResponse('NOT_FOUND', 'Customer not found', 404);
-    }
-    return NextResponse.json(customer);
+    const { data, error } = await db().from('customers').select('*').eq('id', id).single();
+    if (error || !data) return formatErrorResponse('NOT_FOUND', 'Customer not found', 404);
+    return NextResponse.json(data);
   } catch (error: any) {
     return formatErrorResponse('SERVER_ERROR', error.message, 500);
   }
 }
 
-export async function PUT(
-  request: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  await ensureDbReady();
+export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const user = parseAuthToken(request);
+    const user = await parseAuthToken(request);
     const perm = checkPermission(user, 'UPDATE', 'customers');
-    if (!perm.allowed) {
-      return formatErrorResponse('FORBIDDEN', perm.error || 'Access denied', 403);
-    }
-
+    if (!perm.allowed) return formatErrorResponse('FORBIDDEN', perm.error || 'Access denied', 403);
     const { id } = await params;
     const body = await request.json();
-    const db = getDb();
-
-    db.prepare(`
-      UPDATE customers 
-      SET name = ?, shop_name = ?, phone = ?, gstin = ?, billing_address = ?, shipping_address = ?, credit_limit = ?, updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `).run(
-      body.name,
-      body.shop_name,
-      body.phone,
-      body.gstin || null,
-      body.billing_address,
-      body.shipping_address,
-      body.credit_limit || 0,
-      id
-    );
-
-    const updated = db.prepare('SELECT * FROM customers WHERE id = ?').get(id);
+    const { error } = await db().from('customers').update({
+      name: body.name, shop_name: body.shop_name, phone: body.phone,
+      gstin: body.gstin || null, billing_address: body.billing_address,
+      shipping_address: body.shipping_address, credit_limit: body.credit_limit || 0,
+    }).eq('id', id);
+    if (error) throw error;
+    const { data: updated } = await db().from('customers').select('*').eq('id', id).single();
     return NextResponse.json(updated);
   } catch (error: any) {
-    return formatErrorResponse('UPDATE_FAILED', error.message || 'Failed to update customer', 400);
+    return formatErrorResponse('UPDATE_FAILED', error.message, 400);
   }
 }
 
-export async function DELETE(
-  request: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  await ensureDbReady();
+export async function DELETE(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const user = parseAuthToken(request);
+    const user = await parseAuthToken(request);
     const perm = checkPermission(user, 'DELETE', 'customers');
-    if (!perm.allowed) {
-      return formatErrorResponse('FORBIDDEN', perm.error || 'Sales Executives are not authorized to delete customers', 403);
-    }
-
+    if (!perm.allowed) return formatErrorResponse('FORBIDDEN', perm.error || 'Access denied', 403);
     const { id } = await params;
-    const db = getDb();
-    db.prepare('DELETE FROM customers WHERE id = ?').run(id);
+    await db().from('customers').delete().eq('id', id);
     return NextResponse.json({ detail: 'Customer deleted successfully' });
   } catch (error: any) {
-    return formatErrorResponse('DELETE_FAILED', error.message || 'Failed to delete customer', 400);
+    return formatErrorResponse('DELETE_FAILED', error.message, 400);
   }
 }

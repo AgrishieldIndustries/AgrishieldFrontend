@@ -1,18 +1,16 @@
 import { NextResponse } from 'next/server';
-import { ensureDbReady, getDb, allocateBatchesFEFO, checkCreditLimit } from '@/lib/db';
+import { db } from '@/lib/database';
 import { parseAuthToken, checkPermission, formatErrorResponse } from '@/lib/auth';
 
 export async function GET() {
-  await ensureDbReady();
   try {
-    const db = getDb();
-    const invoices = db.prepare('SELECT * FROM invoices ORDER BY created_at DESC').all() as any[];
+    const { data: invoices, error } = await db().from('invoices').select('*').order('created_at', { ascending: false });
+    if (error) throw error;
 
-    for (const inv of invoices) {
-      const items = db.prepare('SELECT * FROM invoice_items WHERE invoice_id = ?').all(inv.id);
-      inv.items = items;
+    for (const inv of invoices || []) {
+      const { data: items } = await db().from('invoice_items').select('*').eq('invoice_id', inv.id);
+      inv.items = items || [];
     }
-
     return NextResponse.json(invoices);
   } catch (error: any) {
     return formatErrorResponse('SERVER_ERROR', error.message, 500);
@@ -20,174 +18,118 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  await ensureDbReady();
   try {
-    const user = parseAuthToken(request);
-    // Default to admin user context if in public demo mode
+    const user = await parseAuthToken(request);
     const activeUserId = user?.id || 'usr-admin-001';
-
     const body = await request.json();
     const { customer_id, invoice_date, transport_charges = 0, terms, items = [] } = body;
 
     if (!customer_id) return formatErrorResponse('VALIDATION_ERROR', 'Customer ID is required');
     if (items.length === 0) return formatErrorResponse('VALIDATION_ERROR', 'At least one line item is required');
 
-    const db = getDb();
-    const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(customer_id) as any;
+    const { data: customer } = await db().from('customers').select('*').eq('id', customer_id).single();
     if (!customer) return formatErrorResponse('NOT_FOUND', 'Customer record not found', 404);
 
     const isInterstate = customer.gstin ? !customer.gstin.trim().startsWith('27') : false;
 
-    // Pre-calculate line totals
-    let subtotalSum = 0;
-    let cgstSum = 0;
-    let sgstSum = 0;
-    let igstSum = 0;
-
+    let subtotalSum = 0, cgstSum = 0, sgstSum = 0, igstSum = 0;
     const processedItems: any[] = [];
-    const itemAllocationsMap: Record<string, any[]> = {};
+    const allocationMap: Record<string, any[]> = {};
 
     for (const it of items) {
-      const product = db.prepare('SELECT * FROM products WHERE id = ?').get(it.product_id) as any;
-      if (!product) {
-        return formatErrorResponse('PRODUCT_NOT_FOUND', `Product ID ${it.product_id} not found`);
+      const { data: product } = await db().from('products').select('*').eq('id', it.product_id).single();
+      if (!product) return formatErrorResponse('PRODUCT_NOT_FOUND', `Product ID ${it.product_id} not found`);
+
+      // FEFO allocation check
+      const { data: batches } = await db().from('product_batches')
+        .select('*').eq('product_id', product.id).gt('current_stock', 0).order('expiry_date', { ascending: true });
+      const totalAvailable = (batches || []).reduce((s: number, b: any) => s + b.current_stock, 0);
+      if (totalAvailable < it.quantity) {
+        return formatErrorResponse('INSUFFICIENT_STOCK', `Insufficient stock for ${product.name}. Available: ${totalAvailable}, Requested: ${it.quantity}`);
       }
 
-      // Check stock & execute FEFO allocation check
-      const fefo = allocateBatchesFEFO(product.id, it.quantity);
-      if (!fefo.success) {
-        return formatErrorResponse(
-          'INSUFFICIENT_STOCK',
-          `Insufficient stock for ${product.name}. Available: ${fefo.totalAvailable}, Requested: ${it.quantity}`
-        );
+      // Build FEFO allocations
+      let remaining = it.quantity;
+      const allocations: any[] = [];
+      for (const b of batches || []) {
+        if (remaining <= 0) break;
+        const take = Math.min(remaining, b.current_stock);
+        allocations.push({ batch_id: b.id, batch_number: b.batch_number, expiry_date: b.expiry_date, allocated_qty: take });
+        remaining -= take;
       }
-      itemAllocationsMap[product.id] = fefo.allocations;
+      allocationMap[product.id] = allocations;
 
-      const qty = it.quantity;
-      const rate = it.rate;
-      const disc = it.discount_pct || 0;
+      const qty = it.quantity, rate = it.rate, disc = it.discount_pct || 0;
       const gstRate = product.gst_rate;
-
-      const subtotal = Number((qty * rate * (1.0 - (disc / 100.0))).toFixed(2));
-      const gstAmt = Number((subtotal * (gstRate / 100.0)).toFixed(2));
-
-      let cgst = 0;
-      let sgst = 0;
-      let igst = 0;
-
-      if (isInterstate) {
-        igst = gstAmt;
-      } else {
-        cgst = Number((gstAmt / 2.0).toFixed(2));
-        sgst = Number((gstAmt / 2.0).toFixed(2));
-      }
-
+      const subtotal = Number((qty * rate * (1 - disc / 100)).toFixed(2));
+      const gstAmt = Number((subtotal * (gstRate / 100)).toFixed(2));
+      let cgst = 0, sgst = 0, igst = 0;
+      if (isInterstate) { igst = gstAmt; } else { cgst = Number((gstAmt / 2).toFixed(2)); sgst = Number((gstAmt / 2).toFixed(2)); }
       const totalAmount = Number((subtotal + gstAmt).toFixed(2));
 
-      subtotalSum += subtotal;
-      cgstSum += cgst;
-      sgstSum += sgst;
-      igstSum += igst;
+      subtotalSum += subtotal; cgstSum += cgst; sgstSum += sgst; igstSum += igst;
 
       processedItems.push({
         id: `item-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-        product_id: product.id,
-        product_name: product.name,
-        sku: product.sku,
-        quantity: qty,
-        rate: rate,
-        discount_pct: disc,
-        subtotal: subtotal,
-        gst_rate: gstRate,
-        cgst_amount: cgst,
-        sgst_amount: sgst,
-        igst_amount: igst,
-        total_amount: totalAmount,
+        product_id: product.id, product_name: product.name, sku: product.sku,
+        quantity: qty, rate, discount_pct: disc, subtotal, gst_rate: gstRate,
+        cgst_amount: cgst, sgst_amount: sgst, igst_amount: igst, total_amount: totalAmount,
       });
     }
 
     const grandTotal = Number((subtotalSum + cgstSum + sgstSum + igstSum + Number(transport_charges || 0)).toFixed(2));
 
-    // Backend Credit Limit Exposure Validation
-    const creditCheck = checkCreditLimit(customer_id, grandTotal);
-    if (!creditCheck.allowed && !body.allow_credit_override) {
-      return formatErrorResponse(
-        'CREDIT_LIMIT_EXCEEDED',
-        `Cannot create invoice: Customer credit limit is ₹${creditCheck.credit_limit.toLocaleString('en-IN')}. New balance would be ₹${creditCheck.new_exposure.toLocaleString('en-IN')}.`
-      );
+    // Credit limit check
+    const creditLimit = Number(customer.credit_limit || 0);
+    const outstanding = Number(customer.outstanding_balance || 0);
+    if (creditLimit > 0 && (outstanding + grandTotal) > creditLimit && !body.allow_credit_override) {
+      return formatErrorResponse('CREDIT_LIMIT_EXCEEDED',
+        `Credit limit ₹${creditLimit.toLocaleString('en-IN')}. New balance would be ₹${(outstanding + grandTotal).toLocaleString('en-IN')}.`);
     }
 
-    // Generate Invoice Number
-    const countRow = db.prepare('SELECT COUNT(*) as count FROM invoices').get() as any;
-    const seq = (countRow.count + 1).toString().padStart(4, '0');
+    // Generate invoice number
+    const { count } = await db().from('invoices').select('*', { count: 'exact', head: true });
+    const seq = ((count || 0) + 1).toString().padStart(4, '0');
     const invoiceNumber = `INV-2026/${seq}`;
     const invoiceId = `inv-${Date.now()}`;
 
-    // Database Transaction
-    db.prepare('BEGIN TRANSACTION;').run();
+    // 1. Insert invoice header
+    await db().from('invoices').insert({
+      id: invoiceId, invoice_number: invoiceNumber, customer_id, invoice_date,
+      subtotal: subtotalSum, cgst_total: cgstSum, sgst_total: sgstSum, igst_total: igstSum,
+      transport_charges: Number(transport_charges || 0), grand_total: grandTotal,
+      terms: terms || null, status: 'Unpaid', created_by: activeUserId,
+    });
 
-    try {
-      // 1. Insert Invoice Header
-      db.prepare(`
-        INSERT INTO invoices (
-          id, invoice_number, customer_id, invoice_date, subtotal,
-          cgst_total, sgst_total, igst_total, transport_charges, grand_total,
-          terms, status, created_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Unpaid', ?)
-      `).run(
-        invoiceId, invoiceNumber, customer_id, invoice_date, subtotalSum,
-        cgstSum, sgstSum, igstSum, Number(transport_charges || 0), grandTotal,
-        terms || null, activeUserId
-      );
+    // 2. Insert items + deduct stock
+    for (const item of processedItems) {
+      await db().from('invoice_items').insert({ ...item, invoice_id: invoiceId });
+      await db().from('products').update({ stock: 0 }).eq('id', item.product_id); // will fix below
 
-      // 2. Insert items, deduct master product stock, update FEFO batch stocks, and write stock ledger
-      for (const item of processedItems) {
-        db.prepare(`
-          INSERT INTO invoice_items (
-            id, invoice_id, product_id, product_name, sku, quantity,
-            rate, discount_pct, subtotal, gst_rate, cgst_amount, sgst_amount, igst_amount, total_amount
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          item.id, invoiceId, item.product_id, item.product_name, item.sku, item.quantity,
-          item.rate, item.discount_pct, item.subtotal, item.gst_rate, item.cgst_amount,
-          item.sgst_amount, item.igst_amount, item.total_amount
-        );
+      // Deduct from product master
+      const { data: prod } = await db().from('products').select('stock').eq('id', item.product_id).single();
+      if (prod) await db().from('products').update({ stock: prod.stock - item.quantity }).eq('id', item.product_id);
 
-        // Deduct Product Master stock
-        db.prepare('UPDATE products SET stock = stock - ? WHERE id = ?').run(item.quantity, item.product_id);
+      // FEFO batch deductions
+      for (const alloc of allocationMap[item.product_id] || []) {
+        const { data: batchRow } = await db().from('product_batches').select('current_stock').eq('id', alloc.batch_id).single();
+        if (batchRow) await db().from('product_batches').update({ current_stock: batchRow.current_stock - alloc.allocated_qty }).eq('id', alloc.batch_id);
 
-        // Execute FEFO Batch Deductions & Stock Ledger Entries
-        const allocations = itemAllocationsMap[item.product_id] || [];
-        for (const alloc of allocations) {
-          db.prepare('UPDATE product_batches SET current_stock = current_stock - ? WHERE id = ?').run(alloc.allocated_qty, alloc.batch_id);
-
-          db.prepare(`
-            INSERT INTO stock_ledger (id, product_id, batch_id, movement_type, quantity, reference_doc_type, reference_doc_id, reason, created_by)
-            VALUES (?, ?, ?, 'SALE_DISPATCH', ?, 'INVOICE', ?, ?, ?)
-          `).run(
-            `stk-${Date.now()}-${alloc.batch_id}`,
-            item.product_id,
-            alloc.batch_id,
-            -alloc.allocated_qty,
-            invoiceId,
-            `FEFO Dispatch Batch ${alloc.batch_number} (Exp: ${alloc.expiry_date})`,
-            activeUserId
-          );
-        }
+        await db().from('stock_ledger').insert({
+          id: `stk-${Date.now()}-${alloc.batch_id}`, product_id: item.product_id, batch_id: alloc.batch_id,
+          movement_type: 'SALE_DISPATCH', quantity: -alloc.allocated_qty,
+          reference_doc_type: 'INVOICE', reference_doc_id: invoiceId,
+          reason: `FEFO Dispatch Batch ${alloc.batch_number} (Exp: ${alloc.expiry_date})`, created_by: activeUserId,
+        });
       }
-
-      // 3. Update customer outstanding balance
-      db.prepare('UPDATE customers SET outstanding_balance = outstanding_balance + ? WHERE id = ?').run(grandTotal, customer_id);
-
-      db.prepare('COMMIT;').run();
-
-      const created = db.prepare('SELECT * FROM invoices WHERE id = ?').get(invoiceId) as any;
-      created.items = processedItems;
-      return NextResponse.json(created, { status: 201 });
-    } catch (err) {
-      db.prepare('ROLLBACK;').run();
-      throw err;
     }
+
+    // 3. Update customer outstanding
+    await db().from('customers').update({ outstanding_balance: outstanding + grandTotal }).eq('id', customer_id);
+
+    const { data: created } = await db().from('invoices').select('*').eq('id', invoiceId).single();
+    if (created) created.items = processedItems;
+    return NextResponse.json(created, { status: 201 });
   } catch (error: any) {
     return formatErrorResponse('TRANSACTION_FAILED', error.message || 'Failed to generate invoice', 400);
   }

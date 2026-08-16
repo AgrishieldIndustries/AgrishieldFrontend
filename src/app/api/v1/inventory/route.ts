@@ -1,45 +1,22 @@
 import { NextResponse } from 'next/server';
-import { ensureDbReady, getDb } from '@/lib/db';
+import { db } from '@/lib/database';
 
 export async function GET() {
-  await ensureDbReady();
   try {
-    const db = getDb();
-    const movements = db.prepare(`
-      SELECT 
-        l.id,
-        l.product_id,
-        p.name as product_name,
-        p.sku,
-        p.category,
-        b.batch_number,
-        l.movement_type,
-        l.quantity,
-        l.reference_doc_type,
-        l.reference_doc_id,
-        l.reason,
-        l.created_at
-      FROM stock_ledger l
-      JOIN products p ON l.product_id = p.id
-      LEFT JOIN product_batches b ON l.batch_id = b.id
-      ORDER BY l.created_at DESC
-    `).all();
+    const { data: ledger } = await db().from('stock_ledger').select('*').order('created_at', { ascending: false });
+    // Enrich with product name
+    const movements = [];
+    for (const entry of ledger || []) {
+      const { data: prod } = await db().from('products').select('name, sku').eq('id', entry.product_id).single();
+      movements.push({ ...entry, product_name: prod?.name, product_sku: prod?.sku });
+    }
 
-    const batches = db.prepare(`
-      SELECT 
-        b.id,
-        b.product_id,
-        p.name as product_name,
-        p.sku,
-        b.batch_number,
-        b.mfg_date,
-        b.expiry_date,
-        b.current_stock,
-        b.cost_price
-      FROM product_batches b
-      JOIN products p ON b.product_id = p.id
-      ORDER BY b.expiry_date ASC
-    `).all();
+    const { data: batchRows } = await db().from('product_batches').select('*').order('expiry_date', { ascending: true });
+    const batches = [];
+    for (const b of batchRows || []) {
+      const { data: prod } = await db().from('products').select('name, sku').eq('id', b.product_id).single();
+      batches.push({ ...b, product_name: prod?.name, sku: prod?.sku });
+    }
 
     return NextResponse.json({ movements, batches });
   } catch (error: any) {
