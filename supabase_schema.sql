@@ -3,9 +3,10 @@
 -- Copy and paste this script directly into your Supabase project's SQL Editor
 -- ================================================================================
 
--- DROP STALE TABLES IF THEY EXIST TO PREVENT TYPE MISMATCH CONFLICTS
+-- DROP ALL EXISTING TABLES FIRST (WITH CASCADE)
 DROP TABLE IF EXISTS invoice_items CASCADE;
 DROP TABLE IF EXISTS invoices CASCADE;
+DROP TABLE IF EXISTS payments CASCADE;
 DROP TABLE IF EXISTS stock_ledger CASCADE;
 DROP TABLE IF EXISTS product_batches CASCADE;
 DROP TABLE IF EXISTS products CASCADE;
