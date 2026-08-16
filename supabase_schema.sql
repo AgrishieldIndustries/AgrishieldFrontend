@@ -1,10 +1,22 @@
 -- ================================================================================
--- AGRISHIELD ERP — SUPABASE POSTGRESQL SCHEMA MIGRATION & SEED SCRIPT
+-- AGRISHIELD ERP — SUPABASE POSTGRESQL CLEAN SCHEMA MIGRATION & SEED SCRIPT
 -- Copy and paste this script directly into your Supabase project's SQL Editor
 -- ================================================================================
 
+-- DROP STALE TABLES IF THEY EXIST TO PREVENT TYPE MISMATCH CONFLICTS
+DROP TABLE IF EXISTS invoice_items CASCADE;
+DROP TABLE IF EXISTS invoices CASCADE;
+DROP TABLE IF EXISTS stock_ledger CASCADE;
+DROP TABLE IF EXISTS product_batches CASCADE;
+DROP TABLE IF EXISTS products CASCADE;
+DROP TABLE IF EXISTS customers CASCADE;
+DROP TABLE IF EXISTS warehouses CASCADE;
+DROP TABLE IF EXISTS inventory_imports CASCADE;
+DROP TABLE IF EXISTS users CASCADE;
+DROP TABLE IF EXISTS settings CASCADE;
+
 -- 1. USERS TABLE
-CREATE TABLE IF NOT EXISTS users (
+CREATE TABLE users (
   id TEXT PRIMARY KEY,
   email TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
@@ -15,7 +27,7 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 -- 2. WAREHOUSES TABLE
-CREATE TABLE IF NOT EXISTS warehouses (
+CREATE TABLE warehouses (
   id TEXT PRIMARY KEY,
   name TEXT UNIQUE NOT NULL,
   code TEXT UNIQUE NOT NULL,
@@ -24,7 +36,7 @@ CREATE TABLE IF NOT EXISTS warehouses (
 );
 
 -- 3. CUSTOMERS TABLE
-CREATE TABLE IF NOT EXISTS customers (
+CREATE TABLE customers (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   shop_name TEXT NOT NULL,
@@ -39,7 +51,7 @@ CREATE TABLE IF NOT EXISTS customers (
 );
 
 -- 4. PRODUCTS TABLE
-CREATE TABLE IF NOT EXISTS products (
+CREATE TABLE products (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   sku TEXT UNIQUE NOT NULL,
@@ -58,7 +70,7 @@ CREATE TABLE IF NOT EXISTS products (
 );
 
 -- 5. PRODUCT BATCHES TABLE
-CREATE TABLE IF NOT EXISTS product_batches (
+CREATE TABLE product_batches (
   id TEXT PRIMARY KEY,
   product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
   warehouse_id TEXT REFERENCES warehouses(id),
@@ -71,7 +83,7 @@ CREATE TABLE IF NOT EXISTS product_batches (
 );
 
 -- 6. STOCK LEDGER TABLE
-CREATE TABLE IF NOT EXISTS stock_ledger (
+CREATE TABLE stock_ledger (
   id TEXT PRIMARY KEY,
   product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
   batch_id TEXT REFERENCES product_batches(id),
@@ -85,7 +97,7 @@ CREATE TABLE IF NOT EXISTS stock_ledger (
 );
 
 -- 7. INVENTORY IMPORTS AUDIT TABLE
-CREATE TABLE IF NOT EXISTS inventory_imports (
+CREATE TABLE inventory_imports (
   id TEXT PRIMARY KEY,
   filename TEXT NOT NULL,
   uploaded_by TEXT NOT NULL REFERENCES users(id),
@@ -97,7 +109,7 @@ CREATE TABLE IF NOT EXISTS inventory_imports (
 );
 
 -- 8. INVOICES TABLE
-CREATE TABLE IF NOT EXISTS invoices (
+CREATE TABLE invoices (
   id TEXT PRIMARY KEY,
   invoice_number TEXT UNIQUE NOT NULL,
   customer_id TEXT NOT NULL REFERENCES customers(id),
@@ -115,7 +127,7 @@ CREATE TABLE IF NOT EXISTS invoices (
 );
 
 -- 9. INVOICE ITEMS TABLE
-CREATE TABLE IF NOT EXISTS invoice_items (
+CREATE TABLE invoice_items (
   id TEXT PRIMARY KEY,
   invoice_id TEXT NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
   product_id TEXT NOT NULL REFERENCES products(id),
@@ -133,7 +145,7 @@ CREATE TABLE IF NOT EXISTS invoice_items (
 );
 
 -- 10. PAYMENTS TABLE
-CREATE TABLE IF NOT EXISTS payments (
+CREATE TABLE payments (
   id TEXT PRIMARY KEY,
   customer_id TEXT NOT NULL REFERENCES customers(id),
   invoice_id TEXT REFERENCES invoices(id),
@@ -147,7 +159,7 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 
 -- 11. COMPANY SETTINGS TABLE
-CREATE TABLE IF NOT EXISTS settings (
+CREATE TABLE settings (
   id INT PRIMARY KEY DEFAULT 1,
   company_name TEXT NOT NULL,
   legal_name TEXT NOT NULL,
@@ -173,16 +185,14 @@ VALUES
   ('usr-admin-001', 'admin@agrishield.in', 'pbkdf2_sha256_hash_admin123', 'System Administrator', 'Admin', 1),
   ('usr-acct-002', 'accounts@agrishield.in', 'pbkdf2_sha256_hash_accounts123', 'Financial Accountant', 'Accountant', 1),
   ('usr-sales-003', 'sales@agrishield.in', 'pbkdf2_sha256_hash_sales123', 'Territory Sales Exec', 'Sales Executive', 1),
-  ('usr-wh-004', 'warehouse@agrishield.in', 'pbkdf2_sha256_hash_wh123', 'Warehouse Manager', 'Warehouse Manager', 1)
-ON CONFLICT (id) DO NOTHING;
+  ('usr-wh-004', 'warehouse@agrishield.in', 'pbkdf2_sha256_hash_wh123', 'Warehouse Manager', 'Warehouse Manager', 1);
 
 -- Seed Warehouses
 INSERT INTO warehouses (id, name, code, address)
 VALUES 
   ('wh-001', 'Main Pune Warehouse', 'PNE-WH', 'MIDC Bhosari, Pune'),
   ('wh-002', 'Baramati Regional Depot', 'BRM-WH', 'MIDC Baramati'),
-  ('wh-003', 'Nashik Godown', 'NSK-WH', 'Station Road, Nashik')
-ON CONFLICT (id) DO NOTHING;
+  ('wh-003', 'Nashik Godown', 'NSK-WH', 'Station Road, Nashik');
 
 -- Seed Settings
 INSERT INTO settings (id, company_name, legal_name, gstin, fertilizer_license, insecticide_license, phone, email, address, bank_name, account_number, ifsc_code)
@@ -199,14 +209,13 @@ VALUES (
   'HDFC Bank Ltd.',
   '50200012345678',
   'HDFC0000123'
-) ON CONFLICT (id) DO NOTHING;
+);
 
 -- Seed Products
 INSERT INTO products (id, name, sku, category, npk_ratio, hsn_code, gst_rate, mrp, dealer_price, distributor_price, batch_number, mfg_date, expiry_date, stock)
 VALUES 
   ('prod-001', 'Water Soluble Fertilizer NPK 19:19:19 (25 Kg)', 'AGR-WSF-191919-25K', 'WSF', '19:19:19', '31052000', 18, 3200, 2400, 2200, 'BATCH-2026-A1', '2026-01-01', '2026-10-31', 1500),
-  ('prod-002', 'Mono Potassium Phosphate NPK 00:52:34 (25 Kg)', 'AGR-WSF-005234-25K', 'WSF', '00:52:34', '31055900', 18, 4100, 3100, 2900, 'BATCH-2026-08B', '2026-02-10', '2028-02-10', 220)
-ON CONFLICT (id) DO NOTHING;
+  ('prod-002', 'Mono Potassium Phosphate NPK 00:52:34 (25 Kg)', 'AGR-WSF-005234-25K', 'WSF', '00:52:34', '31055900', 18, 4100, 3100, 2900, 'BATCH-2026-08B', '2026-02-10', '2028-02-10', 220);
 
 -- Seed Product Batches
 INSERT INTO product_batches (id, product_id, warehouse_id, batch_number, mfg_date, expiry_date, current_stock, cost_price)
@@ -214,8 +223,7 @@ VALUES
   ('bth-prod001-a1', 'prod-001', 'wh-001', 'BATCH-2026-A1', '2026-01-01', '2026-10-31', 500, 1680),
   ('bth-prod001-b2', 'prod-001', 'wh-001', 'BATCH-2026-B2', '2026-02-01', '2027-05-31', 300, 1680),
   ('bth-prod001-c3', 'prod-001', 'wh-001', 'BATCH-2026-C3', '2026-03-01', '2028-01-31', 700, 1680),
-  ('bth-prod002-01', 'prod-002', 'wh-001', 'BATCH-2026-08B', '2026-02-10', '2028-02-10', 220, 2170)
-ON CONFLICT (id) DO NOTHING;
+  ('bth-prod002-01', 'prod-002', 'wh-001', 'BATCH-2026-08B', '2026-02-10', '2028-02-10', 220, 2170);
 
 -- Seed Stock Ledger
 INSERT INTO stock_ledger (id, product_id, batch_id, movement_type, quantity, reason, created_by)
@@ -223,11 +231,9 @@ VALUES
   ('stk-bth-prod001-a1', 'prod-001', 'bth-prod001-a1', 'MANUAL_INBOUND', 500, 'Initial batch opening seed', 'usr-admin-001'),
   ('stk-bth-prod001-b2', 'prod-001', 'bth-prod001-b2', 'MANUAL_INBOUND', 300, 'Initial batch opening seed', 'usr-admin-001'),
   ('stk-bth-prod001-c3', 'prod-001', 'bth-prod001-c3', 'MANUAL_INBOUND', 700, 'Initial batch opening seed', 'usr-admin-001'),
-  ('stk-bth-prod002-01', 'prod-002', 'bth-prod002-01', 'MANUAL_INBOUND', 220, 'Initial batch opening seed', 'usr-admin-001')
-ON CONFLICT (id) DO NOTHING;
+  ('stk-bth-prod002-01', 'prod-002', 'bth-prod002-01', 'MANUAL_INBOUND', 220, 'Initial batch opening seed', 'usr-admin-001');
 
 -- Seed Customers
 INSERT INTO customers (id, name, shop_name, phone, gstin, billing_address, shipping_address, credit_limit, outstanding_balance)
 VALUES 
-  ('cust-001', 'Sanjay Patil', 'Sai Agro Agencies', '9822114400', '27AAAPS1234A1Z0', 'Main Market Road, Baramati, Dist. Pune, MH - 413102', 'Warehouse 2, MIDC Baramati, Pune, MH - 413102', 500000, 145000)
-ON CONFLICT (id) DO NOTHING;
+  ('cust-001', 'Sanjay Patil', 'Sai Agro Agencies', '9822114400', '27AAAPS1234A1Z0', 'Main Market Road, Baramati, Dist. Pune, MH - 413102', 'Warehouse 2, MIDC Baramati, Pune, MH - 413102', 500000, 145000);
