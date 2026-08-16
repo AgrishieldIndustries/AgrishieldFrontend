@@ -25,8 +25,12 @@ export async function POST(request: Request) {
       .eq('is_active', 1)
       .single();
 
-    if (error || !user) {
-      return NextResponse.json({ detail: 'Invalid email or password' }, { status: 401 });
+    if (error) {
+      return NextResponse.json({ detail: `Database error: ${error.message} (${error.code})` }, { status: 401 });
+    }
+
+    if (!user) {
+      return NextResponse.json({ detail: 'Invalid email or password (user not found)' }, { status: 401 });
     }
 
     const token = `token_agrishield_${user.id}_${Date.now()}`;
