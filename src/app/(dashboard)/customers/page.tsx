@@ -46,6 +46,39 @@ export default function CustomersPage() {
   const [formData, setFormData] = useState<CustomerFormData>(emptyForm);
   const [saving, setSaving] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [searchingGstin, setSearchingGstin] = useState(false);
+  const [gstinFeedback, setGstinFeedback] = useState<string | null>(null);
+
+  const handleGstinLookup = async (gstinVal: string) => {
+    const cleanGstin = gstinVal.trim().toUpperCase();
+    if (cleanGstin.length !== 15) return;
+
+    setSearchingGstin(true);
+    setGstinFeedback('Searching GST registry...');
+    try {
+      const res = await apiFetch(`/customers/gst-lookup?gstin=${cleanGstin}`);
+      if (!res.ok) throw new Error('Not found');
+      const data = await res.json();
+      if (data.found) {
+        setFormData(prev => ({
+          ...prev,
+          name: prev.name || data.name,
+          shop_name: prev.shop_name || data.shop_name,
+          billing_address: prev.billing_address || data.billing_address,
+          shipping_address: prev.shipping_address || data.shipping_address,
+        }));
+        setGstinFeedback(
+          data.source === 'local_database'
+            ? '✅ Existing customer details loaded!'
+            : '✅ Autofilled from GSTIN Registry!'
+        );
+      }
+    } catch (err) {
+      setGstinFeedback('❌ GSTIN not found / invalid');
+    } finally {
+      setSearchingGstin(false);
+    }
+  };
 
   const fetchCustomers = async () => {
     setLoading(true);
@@ -83,6 +116,7 @@ export default function CustomersPage() {
       setShowForm(false);
       setEditingId(null);
       setFormData(emptyForm);
+      setGstinFeedback(null);
       fetchCustomers();
     } catch (err: any) {
       alert(err.message);
@@ -93,6 +127,7 @@ export default function CustomersPage() {
 
   const handleEdit = (customer: Customer) => {
     setEditingId(customer.id);
+    setGstinFeedback(null);
     setFormData({
       name: customer.name,
       shop_name: customer.shop_name,
@@ -147,7 +182,7 @@ export default function CustomersPage() {
             <RefreshCw className="h-4 w-4" />
           </button>
           <button
-            onClick={() => { setEditingId(null); setFormData(emptyForm); setShowForm(true); }}
+            onClick={() => { setEditingId(null); setFormData(emptyForm); setGstinFeedback(null); setShowForm(true); }}
             className="flex items-center space-x-1.5 rounded-xl bg-green-600 px-4 py-2 text-xs font-semibold text-white shadow-sm shadow-green-600/10 hover:bg-green-700 transition-all cursor-pointer"
           >
             <Plus className="h-4 w-4 stroke-[2.5]" />
@@ -314,7 +349,7 @@ export default function CustomersPage() {
                 {editingId ? 'Edit Customer' : 'Add New Customer'}
               </h3>
               <button
-                onClick={() => { setShowForm(false); setEditingId(null); setFormData(emptyForm); }}
+                onClick={() => { setShowForm(false); setEditingId(null); setFormData(emptyForm); setGstinFeedback(null); }}
                 className="rounded-lg p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-50 cursor-pointer"
               >
                 <X className="h-4 w-4" />
@@ -346,11 +381,44 @@ export default function CustomersPage() {
                     placeholder="9822114400" />
                 </div>
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-500 mb-1.5">GSTIN</label>
-                  <input type="text" value={formData.gstin}
-                    onChange={(e) => setFormData({ ...formData, gstin: e.target.value })}
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800 focus:bg-white focus:border-green-600 focus:outline-none focus:ring-2 focus:ring-green-600/10"
-                    placeholder="27AAAPS1234A1Z0" maxLength={15} />
+                  <label className="block text-[11px] font-semibold text-slate-500 mb-1.5 flex justify-between items-center">
+                    <span>GSTIN</span>
+                    {formData.gstin.trim().length === 15 && (
+                      <button
+                        type="button"
+                        onClick={() => handleGstinLookup(formData.gstin)}
+                        disabled={searchingGstin}
+                        className="text-[10px] text-green-600 hover:text-green-700 font-bold underline cursor-pointer disabled:opacity-50"
+                      >
+                        {searchingGstin ? 'Searching...' : 'Retry Search'}
+                      </button>
+                    )}
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={formData.gstin}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setFormData({ ...formData, gstin: val });
+                        if (val.trim().length === 15) {
+                          handleGstinLookup(val);
+                        } else {
+                          setGstinFeedback(null);
+                        }
+                      }}
+                      className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800 focus:bg-white focus:border-green-600 focus:outline-none focus:ring-2 focus:ring-green-600/10 uppercase"
+                      placeholder="27AAAPS1234A1Z0"
+                      maxLength={15}
+                    />
+                  </div>
+                  {gstinFeedback && (
+                    <p className={`mt-1 text-[10px] font-medium ${
+                      gstinFeedback.startsWith('✅') ? 'text-green-600' : gstinFeedback.startsWith('❌') ? 'text-red-500' : 'text-slate-500 animate-pulse'
+                    }`}>
+                      {gstinFeedback}
+                    </p>
+                  )}
                 </div>
               </div>
               <div>
@@ -372,7 +440,7 @@ export default function CustomersPage() {
                   className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800 focus:bg-white focus:border-green-600 focus:outline-none focus:ring-2 focus:ring-green-600/10" />
               </div>
               <div className="flex justify-end space-x-3 pt-2">
-                <button type="button" onClick={() => { setShowForm(false); setEditingId(null); }}
+                <button type="button" onClick={() => { setShowForm(false); setEditingId(null); setFormData(emptyForm); setGstinFeedback(null); }}
                   className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-all cursor-pointer">
                   Cancel
                 </button>

@@ -55,22 +55,8 @@ export default function InvoicesPage() {
     fetchData();
   }, []);
 
-  const handleDownloadPDF = async (id: string, invoiceNumber: string) => {
-    try {
-      const response = await apiFetch(`/invoices/${id}/pdf`);
-      if (!response.ok) throw new Error('Could not download PDF');
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `invoice_${invoiceNumber.replace('/', '_')}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
-    } catch (err) {
-      alert('Error downloading PDF file');
-    }
+  const handleDownloadPDF = (id: string, invoiceNumber: string) => {
+    window.open(`/api/v1/invoices/${id}/pdf`, '_blank');
   };
 
   const filteredInvoices = invoices.filter(inv => {
